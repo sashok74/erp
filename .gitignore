@@ -1,0 +1,16 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Environment
+.env
+!.env.example
+
+# IDE
+.idea/
+.vscode/settings.json
+*.swp
+*~
+
+# OS
+.DS_Store

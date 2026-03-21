@@ -1,0 +1,12 @@
+# Ускорение линковки на Linux (mold — самый быстрый линкер)
+# Установка: sudo apt install mold
+# Раскомментировать после установки:
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[build]
+incremental = true
+
+[term]
+color = "always"
