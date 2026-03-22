@@ -1,14 +1,22 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
-//! ERP Kernel — базовые типы, трейты и value objects.
+//! ERP Kernel — Platform SDK для Bounded Contexts.
+//!
+//! Определяет контракты (трейты), идентификаторы, ошибки и формат событий.
+//! Не содержит бизнес-примитивов (Value Objects) — они живут в каждом BC.
+//!
 //! Нулевые зависимости от инфраструктуры.
-//! Это Shared Kernel из Context Map.
 
-// Модули будут добавлены в Layer 1:
-// pub mod types;
-// pub mod commands;
-// pub mod events;
-// pub mod entity;
-// pub mod value_objects;
-// pub mod errors;
+pub mod commands;
+pub mod entity;
+pub mod errors;
+pub mod events;
+pub mod types;
+
+// Re-exports для удобства: `use kernel::TenantId` вместо `use kernel::types::TenantId`
+pub use commands::{Command, CommandEnvelope};
+pub use entity::{AggregateRoot, Entity};
+pub use errors::{AppError, DomainError};
+pub use events::{CloudEvent, DomainEvent};
+pub use types::{EntityId, RequestContext, TenantId, UserId};
