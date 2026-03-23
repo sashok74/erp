@@ -20,6 +20,8 @@ allow = [
     "BSL-1.0",
     "OpenSSL",
     "CC0-1.0",
+    # webpki-roots (корневые сертификаты TLS) — permissive data license
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 
@@ -31,6 +33,8 @@ registries = []
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Path-зависимости внутри workspace не имеют версии — это нормально
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"
