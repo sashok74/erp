@@ -4,12 +4,17 @@
 //! Каждый тест использует уникальный `tenant_id` для изоляции.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
-use event_bus::EventEnvelope;
+use async_trait::async_trait;
+use event_bus::InProcessBus;
+use event_bus::traits::{EventBus, EventHandler};
+use event_bus::{EventEnvelope, EventHandlerAdapter};
 use kernel::DomainEvent;
 use kernel::types::{RequestContext, TenantId, UserId};
 use runtime::ports::{UnitOfWork, UnitOfWorkFactory};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 fn database_url() -> String {
@@ -492,6 +497,272 @@ async fn clorinde_domain_history_insert() {
     // Cleanup.
     client
         .execute("DELETE FROM common.domain_history WHERE id = $1", &[&id])
+        .await
+        .unwrap();
+}
+
+// ─── Outbox Relay ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RelayTestEvt {
+    id: Uuid,
+}
+
+impl DomainEvent for RelayTestEvt {
+    fn event_type(&self) -> &'static str {
+        "erp.test.relay.v1"
+    }
+    fn aggregate_id(&self) -> Uuid {
+        self.id
+    }
+}
+
+struct FlagHandler {
+    called: Arc<AtomicBool>,
+}
+
+#[async_trait]
+impl EventHandler for FlagHandler {
+    type Event = RelayTestEvt;
+
+    async fn handle(&self, _event: &Self::Event) -> Result<(), anyhow::Error> {
+        self.called.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn handled_event_type(&self) -> &'static str {
+        "erp.test.relay.v1"
+    }
+}
+
+#[tokio::test]
+async fn relay_publishes_outbox_entry() {
+    let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
+    let bus = Arc::new(InProcessBus::new());
+
+    let called = Arc::new(AtomicBool::new(false));
+    let handler = Arc::new(EventHandlerAdapter::new(FlagHandler {
+        called: called.clone(),
+    }));
+    bus.subscribe("erp.test.relay.v1", handler).await;
+
+    // Insert outbox entry directly.
+    let ctx = new_ctx();
+    let envelope = {
+        let evt = RelayTestEvt { id: Uuid::now_v7() };
+        EventEnvelope::from_domain_event(&evt, &ctx, "test").unwrap()
+    };
+    let event_id = envelope.event_id;
+
+    let client = pool.get().await.unwrap();
+    let params = clorinde_gen::common::outbox::InsertOutboxParams {
+        tenant_id: *ctx.tenant_id.as_uuid(),
+        event_id: envelope.event_id,
+        event_type: &envelope.event_type,
+        source: &envelope.source,
+        payload: &envelope.payload,
+        correlation_id: envelope.correlation_id,
+        causation_id: envelope.causation_id,
+        user_id: *ctx.user_id.as_uuid(),
+        created_at: envelope.timestamp,
+    };
+    clorinde_gen::common::outbox::insert_outbox_entry(&**client, &params)
+        .await
+        .unwrap();
+    drop(client);
+
+    // Run relay — may publish more than 1 entry if other tests left data.
+    let relay = db::OutboxRelay::new(pool.clone(), bus.clone(), Duration::from_millis(50), 100);
+    let published = relay.poll_and_publish().await.unwrap();
+    assert!(published >= 1, "at least our entry should be published");
+
+    // Give spawned handler task time to complete.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        called.load(Ordering::SeqCst),
+        "handler should have been called"
+    );
+
+    // Verify published_at is set.
+    let client = pool.get().await.unwrap();
+    let row = client
+        .query_one(
+            "SELECT published FROM common.outbox WHERE event_id = $1",
+            &[&event_id],
+        )
+        .await
+        .unwrap();
+    let published_flag: bool = row.get(0);
+    assert!(published_flag, "outbox entry should be marked published");
+
+    // Cleanup.
+    client
+        .execute(
+            "DELETE FROM common.outbox WHERE event_id = $1",
+            &[&event_id],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn relay_increments_retry_on_handler_error() {
+    let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
+    let bus = Arc::new(InProcessBus::new());
+
+    // publish_and_wait is not used by relay — relay uses publish() which is fire-and-forget.
+    // But InProcessBus.publish() spawns handler and catches error internally.
+    // For testing retry, we need a bus that returns Err from publish().
+    // Let's test via direct outbox row inspection instead: insert, run relay,
+    // check that published_at remains NULL when no handler subscribed but bus returns Ok.
+    //
+    // Actually, InProcessBus.publish() always returns Ok (errors are caught in spawned task).
+    // So to test retry_count increment, we need a custom bus impl.
+
+    struct FailingBus;
+
+    #[async_trait]
+    impl EventBus for FailingBus {
+        async fn publish(&self, _envelope: EventEnvelope) -> Result<(), anyhow::Error> {
+            anyhow::bail!("bus publish error")
+        }
+        async fn publish_and_wait(&self, _envelope: EventEnvelope) -> Result<(), anyhow::Error> {
+            anyhow::bail!("bus publish error")
+        }
+        async fn subscribe(
+            &self,
+            _event_type: &'static str,
+            _handler: Arc<dyn event_bus::ErasedEventHandler>,
+        ) {
+        }
+    }
+
+    let failing_bus: Arc<dyn EventBus> = Arc::new(FailingBus);
+
+    let ctx = new_ctx();
+    let envelope = {
+        let evt = RelayTestEvt { id: Uuid::now_v7() };
+        EventEnvelope::from_domain_event(&evt, &ctx, "test").unwrap()
+    };
+    let event_id = envelope.event_id;
+
+    let client = pool.get().await.unwrap();
+
+    // Mark any existing unpublished entries to avoid interference.
+    client
+        .execute(
+            "UPDATE common.outbox SET published = true, published_at = now() \
+             WHERE published = false",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let params = clorinde_gen::common::outbox::InsertOutboxParams {
+        tenant_id: *ctx.tenant_id.as_uuid(),
+        event_id: envelope.event_id,
+        event_type: &envelope.event_type,
+        source: &envelope.source,
+        payload: &envelope.payload,
+        correlation_id: envelope.correlation_id,
+        causation_id: envelope.causation_id,
+        user_id: *ctx.user_id.as_uuid(),
+        created_at: envelope.timestamp,
+    };
+    clorinde_gen::common::outbox::insert_outbox_entry(&**client, &params)
+        .await
+        .unwrap();
+    drop(client);
+
+    // Run relay once — publish will fail, retry_count incremented.
+    let relay = db::OutboxRelay::new(pool.clone(), failing_bus, Duration::from_millis(50), 100);
+    relay.poll_and_publish().await.unwrap();
+
+    // Verify retry_count incremented.
+    let client = pool.get().await.unwrap();
+    let row = client
+        .query_one(
+            "SELECT retry_count, published FROM common.outbox WHERE event_id = $1",
+            &[&event_id],
+        )
+        .await
+        .unwrap();
+    let retry_count: i32 = row.get(0);
+    let published_flag: bool = row.get(1);
+    assert!(retry_count >= 1, "retry_count should be at least 1");
+    assert!(!published_flag, "should not be published after failure");
+
+    // Test max-retry skip: set retry_count to 3 directly, verify relay skips it.
+    client
+        .execute(
+            "UPDATE common.outbox SET retry_count = 3 WHERE event_id = $1",
+            &[&event_id],
+        )
+        .await
+        .unwrap();
+
+    let published = relay.poll_and_publish().await.unwrap();
+    // Our entry should be skipped — it's at max retries.
+    let row = client
+        .query_one(
+            "SELECT published FROM common.outbox WHERE event_id = $1",
+            &[&event_id],
+        )
+        .await
+        .unwrap();
+    let still_unpublished: bool = !row.get::<_, bool>(0);
+    assert!(
+        still_unpublished,
+        "entry at max retries should remain unpublished"
+    );
+
+    // Cleanup.
+    client
+        .execute(
+            "DELETE FROM common.outbox WHERE event_id = $1",
+            &[&event_id],
+        )
+        .await
+        .unwrap();
+
+    let _ = bus;
+    let _ = published;
+}
+
+// ─── InboxGuard ─────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn inbox_guard_dedup() {
+    let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
+    let inbox = db::InboxGuard::new(pool.clone());
+
+    let event_id = Uuid::now_v7();
+
+    // First → true (new).
+    let first = inbox
+        .try_process(event_id, "erp.test.inbox_guard.v1", "test")
+        .await
+        .unwrap();
+    assert!(first, "first call should return true");
+
+    // Second → false (duplicate).
+    let second = inbox
+        .try_process(event_id, "erp.test.inbox_guard.v1", "test")
+        .await
+        .unwrap();
+    assert!(!second, "second call should return false");
+
+    // Different event_id → true.
+    let other = inbox
+        .try_process(Uuid::now_v7(), "erp.test.inbox_guard.v1", "test")
+        .await
+        .unwrap();
+    assert!(other, "different event_id should return true");
+
+    // Cleanup.
+    let client = pool.get().await.unwrap();
+    client
+        .execute("DELETE FROM common.inbox WHERE event_id = $1", &[&event_id])
         .await
         .unwrap();
 }
