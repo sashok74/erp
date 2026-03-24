@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /home/raa/RustProjects/erp diff --stat)",
+      "Bash(git -C /home/raa/RustProjects/erp log --oneline -3)",
+      "Bash(git -C /home/raa/RustProjects/erp add Cargo.lock crates/event_bus/Cargo.toml crates/event_bus/src/lib.rs crates/event_bus/src/bus.rs crates/event_bus/src/envelope.rs crates/event_bus/src/registry.rs crates/event_bus/src/traits.rs deny.toml docs/event_bus_architecture.md docs/layer3a_spec.md)",
+      "Bash(xargs ls:*)",
+      "Bash(clorinde --version)",
+      "Bash(source .env)",
+      "Bash(for f:*)",
+      "Bash(do echo:*)",
+      "Bash(psql \"$DATABASE_URL\" -f \"$f\")",
+      "Bash(done)",
+      "Bash(psql \"$DATABASE_URL\" -c \"SELECT schemaname, tablename, rowsecurity FROM pg_tables WHERE schemaname = ''common'' ORDER BY tablename;\")",
+      "Read(//home/raa/RustProjects/erp/**)"
+    ],
+    "additionalDirectories": [
+      "/home/raa/RustProjects/erp/.claude"
+    ]
+  }
+}
