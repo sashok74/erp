@@ -4,6 +4,7 @@
 //! - **Noop** — ничего не делают, всегда `Ok`. Для простых тестов.
 //! - **Spy** — записывают вызовы. Для проверки, что Pipeline вызвал нужные шаги.
 
+use std::any::Any;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -127,6 +128,10 @@ impl UnitOfWork for InMemoryUnitOfWork {
     async fn rollback(self: Box<Self>) -> Result<(), AppError> {
         self.rolled_back.store(true, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
     }
 }
 

@@ -52,6 +52,12 @@ db-reset:
     sqlx database create
     just db-migrate
 
+clorinde-generate:
+    clorinde generate \
+      --queries-path queries/ \
+      --destination crates/clorinde-gen/
+    @echo "Clorinde crate regenerated"
+
 # === Запуск ===
 
 run:

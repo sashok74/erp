@@ -1,0 +1,17 @@
+[package]
+name = "clorinde-gen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# TODO: заменить ручной crate на автогенерацию Clorinde CLI:
+#   clorinde generate --queries-path queries/ --destination crates/clorinde-gen/
+
+[dependencies]
+tokio-postgres = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }

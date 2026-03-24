@@ -12,8 +12,19 @@ use uuid::Uuid;
 ///
 /// Каждый tenant — изолированная организация в мультитенантной ERP.
 /// Используется в RLS-политиках `PostgreSQL` для фильтрации данных.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
-#[sqlx(transparent)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    postgres_types::ToSql,
+    postgres_types::FromSql,
+)]
+#[postgres(transparent)]
 pub struct TenantId(Uuid);
 
 impl TenantId {
@@ -52,8 +63,19 @@ impl fmt::Display for TenantId {
 ///
 /// Привязан к конкретному tenant'у. Используется в аудите,
 /// авторизации и трассировке запросов.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
-#[sqlx(transparent)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    postgres_types::ToSql,
+    postgres_types::FromSql,
+)]
+#[postgres(transparent)]
 pub struct UserId(Uuid);
 
 impl UserId {
@@ -93,8 +115,19 @@ impl fmt::Display for UserId {
 /// Используется как ID агрегата внутри Bounded Context.
 /// Каждый BC может иметь свои именованные ID-типы, но `EntityId` —
 /// общий контракт для kernel-уровня.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type)]
-#[sqlx(transparent)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    postgres_types::ToSql,
+    postgres_types::FromSql,
+)]
+#[postgres(transparent)]
 pub struct EntityId(Uuid);
 
 impl EntityId {

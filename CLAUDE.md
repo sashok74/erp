@@ -4,11 +4,26 @@
 
 ---
 
+## Ключевые документы (порядок чтения)
+
+1. **`docs/EXECUTION_PLAN.md`** — что делать дальше, в каком порядке. **Главный документ.** При конфликте с layer specs — EXECUTION_PLAN главнее.
+2. **`docs/engineering_invariants.md`** — правила, которые никогда не ослабляются
+3. **`docs/event_bus_architecture.md`** — как работает шина событий
+4. **`crates/*/src/lib.rs`** — точка входа в каждый crate, doc-comments объясняют назначение
+
+## При создании нового Bounded Context
+
+1. Прочитать `docs/EXECUTION_PLAN.md` фаза 6 (BC Template)
+2. Прочитать `crates/warehouse/BC_CONTEXT.md` (reference implementation)
+3. Проверить чеклист из `docs/engineering_invariants.md`
+
+---
+
 ## Проект
 
 **ERP нового поколения** — производственная ERP-система для российского рынка (дискретное производство, СМБ). Modular monolith на Rust, PostgreSQL, Event Sourcing для ключевых модулей.
 
-Это **учебный + исследовательский проект**: каждая задача — одновременно изучение Rust и строительство реального слоя ERP. Код должен быть production-quality, но с пояснениями «почему так».
+Учебный + исследовательский проект: каждая задача — одновременно изучение Rust и строительство реального слоя ERP.
 
 ---
 
@@ -16,7 +31,7 @@
 
 - **ОС:** Debian 12 (LXC-контейнер на Proxmox)
 - **Корень проекта:** `/home/dev/projects/erp/`
-- **PostgreSQL:** отдельный сервер в локальной сети (не localhost), подключение через `DATABASE_URL` из `.env`
+- **PostgreSQL:** отдельный сервер в локальной сети, подключение через `DATABASE_URL` из `.env`
 - **Rust:** stable toolchain, edition 2024
 - **Task runner:** `just` (justfile в корне проекта)
 - **IDE:** VS Code Remote SSH с rust-analyzer
@@ -25,72 +40,79 @@
 
 ## Архитектура
 
-### Ключевые решения (ADR v1)
+### Ключевые решения
 
 - **Modular monolith** — один binary, crate per Bounded Context, split to microservices позже
 - **PostgreSQL shared DB** — одна БД, schema per BC, tenant_id + RLS для изоляции
+- **Clorinde (SQL-first)** — SQL-запросы в `.sql` файлах → `clorinde generate` → типобезопасный Rust crate. **Не sqlx, не Diesel, не ORM.** Драйвер: `tokio-postgres` + `deadpool-postgres`
 - **Hybrid Event Sourcing** — полный ES для Warehouse и Finance, CRUD+events для остальных
-- **In-process event bus** — tokio channels сейчас; **легко заменяется на RabbitMQ/NATS/Kafka** при переходе к микросервисам (trait EventBus — единственная точка замены)
-- **Single ACID TX** для cross-BC consistency-critical ops, async after-commit для side effects
-- **Lua + WASM** extension layer для tenant-кастомизации
-- **Thin web UI** — askama + htmx, не SPA
+- **In-process event bus** — tokio channels; заменяется на RabbitMQ/NATS/Kafka через trait EventBus
+- **Single ACID TX** для cross-BC ops, async after-commit для side effects
 - **MVP домен:** Warehouse (складской учёт)
 
-### Порядок реализации (trait-first, inside-out)
-
-Принцип: **сначала абстракции (traits/порты), потом инфраструктура (адаптеры/БД)**.
-Onion Architecture: центр (Domain, Application) → периферия (Infrastructure).
+### Database stack
 
 ```
-Phase 1 — Абстракции (без БД):
-  Layer 0   Cargo Workspace + CI/CD scaffold
-  Layer 1   Kernel: Platform SDK (трейты, ID, ошибки, CloudEvent)
-  Layer 3a  Event Bus: traits + InProcessBus (tokio channels, без БД)
-  Layer 5a  BC Runtime: traits + Command Pipeline (stubs, без БД)
-  Layer 4a  Auth: JWT + RBAC (без БД)
-
-Phase 2 — Инфраструктура (с БД):
-  Layer 2   Data Access: PostgreSQL + миграции + RLS + UoW
-  Layer 4b  Audit + SeqGen (реализация поверх БД)
-  Layer 3b  Outbox Relay + DLQ (фоновый worker, poll БД)
-  Layer 5b  Pipeline: wiring реальных зависимостей
-
-Phase 3 — Бизнес-логика:
-  Layer 6   Warehouse BC (MVP, полный Event Sourcing)
-
-Phase 4 — Внешний периметр:
-  Layer 7   API Gateway (axum)
-  Layer 8   Extension Runtime (Lua + WASM)
-  Layer 9   Thin Web UI (askama + htmx)
+tokio-postgres        — async PostgreSQL driver (low-level)
+deadpool-postgres     — connection pool
+postgres-types        — Rust ↔ PG type mapping (derive ToSql/FromSql)
+Clorinde CLI          — SQL → типобезопасный Rust crate (codegen)
 ```
+
+**НЕ используем:** sqlx, Diesel, SeaORM, любые ORM.
+
+### Clorinde: SQL-first подход
+
+```
+queries/                        ← SQL-файлы по BC
+  ├── common/
+  └── warehouse/
+
+crates/clorinde-gen/            ← СГЕНЕРИРОВАННЫЙ crate
+```
+
+Цепочка: `.sql` файл → `clorinde generate` → Rust crate → используется в infrastructure.
+
+### Принцип: минимум бизнеса, максимум механизмов
+
+Каждый архитектурный механизм работает с первого дня. Бизнес-логика минимальна.
+
+- «Пока без партий и резервов» — допустимо (упрощение бизнеса)
+- «Пока без audit / без events / без RLS» — **недопустимо** (упрощение механизма)
 
 ### Структура crate'ов
 
 ```
 crates/
-  kernel/       — Platform SDK: контракты (трейты), идентификаторы, ошибки, CloudEvent.
-                  НЕ содержит бизнес-примитивов (Value Objects) — они в каждом BC.
-  db/           — PgPool, RLS, UnitOfWork, миграции, outbox
-  event_bus/    — EventBus trait + InProcessBus (tokio channels).
-                  Trait = точка замены на RabbitMQ/NATS/Kafka.
-  auth/         — JWT issue/verify, RBAC, axum middleware
-  audit/        — structured audit log writer
-  seq_gen/      — gap-free sequence generator per tenant
-  runtime/      — CommandPipeline, CommandHandler/QueryHandler traits, BoundedContextModule
-  extensions/   — Lua sandbox (mlua), WASM (wasmtime)
-  warehouse/    — MVP: domain (aggregates, value objects, events), application (commands, queries), infrastructure (pg repo)
-  gateway/      — axum HTTP server, routing, middleware, error handler (единственный binary)
+  kernel/         — Platform SDK: трейты, ID, ошибки, CloudEvent. Без зависимости от БД.
+  event_bus/      — EventBus trait + InProcessBus. Заменяем на RabbitMQ/NATS.
+  runtime/        — CommandPipeline, CommandHandler/QueryHandler, ports, stubs.
+  auth/           — JWT, RBAC, PermissionChecker, axum middleware.
+  db/             — PgPool (deadpool), RLS, PgUnitOfWork, migrations.
+  clorinde-gen/   — СГЕНЕРИРОВАННЫЙ: типобезопасные SQL-функции.
+  audit/          — PgAuditLog (impl AuditLog trait).
+  seq_gen/        — PgSequenceGenerator (gap-free per-tenant).
+  warehouse/      — MVP BC: domain, application, infrastructure.
+  gateway/        — axum HTTP server (единственный binary).
+  extensions/     — Lua (mlua) + WASM (wasmtime).
 ```
 
-### Onion Architecture внутри каждого BC
+---
 
-```
-Domain (ядро)       — агрегаты, entities, value objects, domain events. Нулевые зависимости.
-Application         — command/query handlers, сервисные интерфейсы (порты)
-Infrastructure      — PostgreSQL repo, event publishers, внешние API клиенты
-```
+## Engineering Invariants (сокращённо)
 
-Зависимости строго внутрь: Infrastructure → Application → Domain.
+Полный список: `docs/engineering_invariants.md`
+
+1. Все write — только через CommandPipeline
+2. Все write — с PermissionChecker (deny by default)
+3. Все write — с audit log + domain history
+4. Межконтекстные связи — только через integration events
+5. Нет direct SQL reads across BC boundaries
+6. Events versioned: `erp.{bc}.{event}.v{N}`
+7. Все tenant-таблицы: tenant_id + RLS policy
+8. Никакой записи мимо UnitOfWork
+9. RequestContext обязателен в каждом handler
+10. Handler не знает про роли
 
 ---
 
@@ -98,142 +120,71 @@ Infrastructure      — PostgreSQL repo, event publishers, внешние API к
 
 ### Kernel = Platform SDK
 
-- Kernel содержит **только** контракты (трейты), идентификаторы, ошибки и формат событий
-- **Value Objects (SKU, Quantity, Money, LotNumber) НЕ в kernel** — они в `domain/value_objects.rs` каждого BC
-- Причина: сторонние разработчики смогут писать BC с собственными бизнес-типами, kernel не навязывает им свои ограничения
-- BC общаются через integration events с примитивными типами в payload (String, Uuid, числа) — Anti-Corruption Layer
-
-### EventBus = заменяемая абстракция
-
-- `EventBus` trait определён в `event_bus` crate
-- `InProcessBus` — реализация на tokio channels для modular monolith
-- При переходе к микросервисам: `RabbitMqBus`, `NatsBus`, `KafkaBus` — другая реализация того же trait
-- Domain и Application слои **не знают** какой bus используется
+- Только контракты, ID, ошибки, CloudEvent
+- **НЕТ** tokio-postgres, deadpool, Clorinde в kernel
+- Value Objects (SKU, Quantity, Money) — в domain/ каждого BC
 
 ### Rust-стиль
 
-- **Edition 2024** (`rust-version = "1.85"`)
-- **Clippy pedantic** включён: `#![warn(clippy::pedantic)]`
-- `#![allow(clippy::module_name_repetitions)]` — допускается в DDD-контексте
-- **rustfmt** — max_width = 100, tab_spaces = 4
-- **thiserror** для типизированных ошибок, **anyhow** только в main/tests
-- **Newtype pattern** для всех идентификаторов: `TenantId(Uuid)`, `UserId(Uuid)`, `EntityId(Uuid)`
-- **UUID v7** (time-ordered) для всех новых ID
-- **BigDecimal** для денег и количеств (не f64) — в value objects каждого BC
-- Все публичные типы — `#[derive(Debug, Clone, Serialize, Deserialize)]` где уместно
-- Комментарии в коде — на русском для бизнес-логики, на английском для технических деталей
+- Edition 2024, clippy pedantic
+- `thiserror` для ошибок, `anyhow` только в main/tests
+- Newtype для ID: `TenantId(Uuid)`, `UserId(Uuid)`, `EntityId(Uuid)`
+- UUID v7 (time-ordered)
+- BigDecimal для денег/количеств (в BC, не в kernel)
+- `pub(crate)` для инкапсуляции
 
-### Row structs = заменяемый слой
+### Naming conventions
 
-- Row structs (`#[derive(sqlx::FromRow)]`) живут в infrastructure, не в domain
-- Маппинг `Row → Domain` — в repository
-- В будущем Row structs будут генерироваться Metadata Engine из метаданных
-- Domain structs остаются ручными (бизнес-логика не генерируется)
+- Commands: `warehouse.receive_goods` (permission keys)
+- Events: `erp.warehouse.goods_received.v1` (CloudEvents convention)
+- Schemas: `common.*`, `warehouse.*`, `finance.*`
+- Sequences: `warehouse.receipt` (prefix + counter)
 
-### Зависимости между crate'ами
+### SQL + Clorinde
 
-```
-kernel          ← ни от кого (чистые типы и трейты)
-event_bus       ← kernel
-db              ← kernel
-auth            ← kernel
-audit           ← kernel, db
-seq_gen         ← kernel, db
-runtime         ← kernel, db, event_bus, auth, audit, extensions
-extensions      ← kernel
-warehouse       ← kernel, db, event_bus, runtime, seq_gen
-gateway         ← kernel, auth, runtime, warehouse (+ будущие BC)
-```
-
-Циклические зависимости запрещены (Cargo это гарантирует).
-
-### SQL и миграции
-
-- **Миграции** в `migrations/common/` (общая инфра) и `migrations/<bc_name>/` (per BC)
-- Формат имени: `V001__description.sql`
-- Каждый BC — своя PostgreSQL schema: `warehouse.*`, `finance.*`, etc.
-- Общая инфраструктура — schema `common.*`
-- **RLS** на всех таблицах с данными tenant'ов
-- Запуск: `just db-migrate`
+- DDL-миграции: `migrations/{bc}/NNN_description.sql`
+- DML-запросы: `queries/{bc}/entity.sql`
+- Генерация: `just clorinde-generate`
+- Row structs — в clorinde-gen (автогенерация), не ручные
 
 ### Тестирование
 
-- Unit-тесты — `#[cfg(test)] mod tests` внутри файлов
-- Integration-тесты — `tests/integration/`, используют testcontainers (Docker + PostgreSQL)
-- **Trait-first тесты** — Pipeline и Bus тестируются с mock/stub реализациями, без БД, мгновенно
-- Запуск: `just test` (всё) или `just test-crate kernel` (один crate)
+- Domain unit-тесты: `#[cfg(test)] mod tests`, без БД
+- Integration: с реальной PostgreSQL через DATABASE_URL
+- Pipeline тесты: со stubs, мгновенные
 
 ---
 
 ## Команды
 
 ```bash
-just build          # собрать workspace
-just test           # все тесты
-just test-crate X   # тесты crate X
-just lint           # clippy --workspace -D warnings
-just fmt            # rustfmt
-just fmt-check      # проверка форматирования
-just deny           # cargo-deny: лицензии + advisories
-just check          # fmt-check + lint + deny + test (полная проверка)
-just run            # запустить gateway
-just watch          # авто-перезапуск при изменениях
-just db-ping        # проверить подключение к PostgreSQL
-just db-migrate     # применить миграции
-just db-reset       # пересоздать БД
+just build              # собрать workspace
+just test               # все тесты
+just test-crate X       # тесты одного crate
+just lint               # clippy -D warnings
+just fmt / fmt-check    # форматирование
+just deny               # лицензии + advisories
+just check              # полная проверка
+just run                # запустить gateway
+just db-migrate         # применить миграции
+just db-reset           # пересоздать БД
+just clorinde-generate  # перегенерировать SQL crate
 ```
-
----
-
-## Контекст для задач
-
-Каждая задача в проекте — это одновременно:
-1. **Изучение конкретной концепции Rust** (newtype, trait, async, lifetime, etc.)
-2. **Создание конкретного слоя ERP** (kernel, event bus, runtime, etc.)
-
-При генерации кода для задачи:
-- Объяснять выбор подхода (почему так принято в Rust community)
-- Показывать связь с архитектурой ERP (зачем этот код в контексте системы)
-- Писать тесты для каждого публичного API
-- Следовать onion architecture: Domain не зависит от Infrastructure
-- Value objects — в BC, не в kernel
-- EventBus — через trait, заменяемый на RabbitMQ/NATS
-
----
-
-## Документация проекта
-
-- `docs/layer0_spec.md` — ТЗ Layer 0 (workspace, toolchain, justfile)
-- `docs/layer1_spec.md` — ТЗ Layer 1 (kernel: Platform SDK)
-- `docs/layer3a_spec.md` — ТЗ Layer 3a (event bus: traits + InProcessBus)
-- `docs/architecture_diagrams.md` — архитектурные схемы (Mermaid)
-- `docs/` — ТЗ для остальных Layer'ов (добавляются по мере работы)
-- `CLAUDE.md` — этот файл
-
-### Исследовательская база (Project Knowledge в Claude)
-
-- `project_index.md` — индекс всех 17 исследовательских артефактов
-- `erp_architecture_diagrams_mermaid.md` — 6 архитектурных схем (Mermaid)
 
 ---
 
 ## Текущий статус
 
-- [x] Исследование и архитектурные решения (17 артефактов)
-- [x] ADR v1 зафиксирован
-- [x] Архитектурные диаграммы (6 типов)
-- [x] План реализации (Layers 0–9, trait-first порядок)
-- [x] LXC-контейнер подготовлен (Debian 12, Rust, Docker, PostgreSQL client)
-- [ ] **Layer 0** — Cargo workspace + toolchain + justfile
-- [ ] **Layer 1** — Kernel: Platform SDK
-- [ ] **Layer 3a** — Event Bus: traits + InProcessBus ← СЛЕДУЮЩИЙ ПОСЛЕ Layer 1
-- [ ] Layer 5a — BC Runtime: traits + Pipeline (stubs)
-- [ ] Layer 4a — Auth: JWT + RBAC
-- [ ] Layer 2 — Data Access (PostgreSQL + RLS)
-- [ ] Layer 4b — Audit, SeqGen (с БД)
-- [ ] Layer 3b — Outbox Relay + DLQ (с БД)
-- [ ] Layer 5b — Pipeline wiring
-- [ ] Layer 6 — Warehouse BC (MVP)
-- [ ] Layer 7 — API Gateway (axum)
-- [ ] Layer 8 — Extension Runtime (Lua + WASM)
-- [ ] Layer 9 — Thin Web UI
+### Готово (Phase 0)
+
+| Crate | Тесты |
+|-------|-------|
+| kernel: TenantId, Command, DomainEvent, AggregateRoot, AppError, CloudEvent | 17 |
+| event_bus: EventBus trait, InProcessBus, EventEnvelope, HandlerRegistry | 16 |
+| runtime: CommandPipeline, CommandHandler, QueryHandler, ports, stubs | 21 |
+| auth: JwtService, RBAC PermissionMap, JwtPermissionChecker, axum middleware | 22 |
+| **Итого** | **76** |
+
+### Следующий: Phase 1 — PostgreSQL + PgUnitOfWork
+
+См. `docs/EXECUTION_PLAN.md` Phase 1.

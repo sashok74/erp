@@ -7,6 +7,8 @@
 //! - `ExtensionHooks` → Lua/WASM sandbox (Layer 8)
 //! - `UnitOfWorkFactory` → `PostgreSQL` TX + RLS (Layer 2)
 
+use std::any::Any;
+
 use async_trait::async_trait;
 use event_bus::EventEnvelope;
 use kernel::{AppError, RequestContext};
@@ -103,6 +105,14 @@ pub trait UnitOfWork: Send + 'static {
     ///
     /// `AppError::Internal` если rollback не удался.
     async fn rollback(self: Box<Self>) -> Result<(), AppError>;
+
+    /// Downcast к конкретному типу `UoW` (например, `PgUnitOfWork`).
+    ///
+    /// Handler'ы используют для доступа к `PostgreSQL`-клиенту:
+    /// ```ignore
+    /// let pg = uow.as_any_mut().downcast_mut::<PgUnitOfWork>().unwrap();
+    /// ```
+    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 #[cfg(test)]

@@ -12,4 +12,4 @@ chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-sqlx = { workspace = true }        # только для sqlx::Type на ID
+postgres-types = { workspace = true }   # ToSql/FromSql для ID newtypes
