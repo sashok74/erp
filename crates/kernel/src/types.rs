@@ -145,13 +145,15 @@ pub struct RequestContext {
     pub causation_id: Uuid,
     /// Время создания контекста.
     pub timestamp: DateTime<Utc>,
+    /// Роли пользователя (строки — kernel не знает о конкретных ролях).
+    pub roles: Vec<String>,
 }
 
 impl RequestContext {
     /// Создать новый контекст запроса.
     ///
     /// `correlation_id` и `causation_id` генерируются как UUID v7,
-    /// `timestamp` — текущее время UTC.
+    /// `timestamp` — текущее время UTC. Роли — пустые по умолчанию.
     #[must_use]
     pub fn new(tenant_id: TenantId, user_id: UserId) -> Self {
         Self {
@@ -160,6 +162,7 @@ impl RequestContext {
             correlation_id: Uuid::now_v7(),
             causation_id: Uuid::now_v7(),
             timestamp: Utc::now(),
+            roles: Vec::new(),
         }
     }
 }
