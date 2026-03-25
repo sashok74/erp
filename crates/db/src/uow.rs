@@ -103,18 +103,23 @@ impl PgUnitOfWork {
     /// INSERT всех outbox entries в `common.outbox` (внутри текущей TX).
     async fn flush_outbox(&self) -> Result<(), AppError> {
         for entry in &self.outbox_entries {
-            let params = clorinde_gen::common::outbox::InsertOutboxParams {
-                tenant_id: *entry.tenant_id.as_uuid(),
-                event_id: entry.event_id,
-                event_type: &entry.event_type,
-                source: &entry.source,
-                payload: &entry.payload,
-                correlation_id: entry.correlation_id,
-                causation_id: entry.causation_id,
-                user_id: *entry.user_id.as_uuid(),
-                created_at: entry.timestamp,
-            };
-            clorinde_gen::common::outbox::insert_outbox_entry(&**self.client, &params)
+            let tenant_id = *entry.tenant_id.as_uuid();
+            let user_id = *entry.user_id.as_uuid();
+            let created_at = entry.timestamp.fixed_offset();
+            clorinde_gen::queries::common::outbox::insert_outbox_entry()
+                .bind(
+                    &self.client,
+                    &tenant_id,
+                    &entry.event_id,
+                    &entry.event_type,
+                    &entry.source,
+                    &entry.payload,
+                    &entry.correlation_id,
+                    &entry.causation_id,
+                    &user_id,
+                    &created_at,
+                )
+                .one()
                 .await
                 .map_err(|e| AppError::Internal(format!("outbox INSERT failed: {e}")))?;
         }

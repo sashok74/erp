@@ -1,11 +1,32 @@
-#![warn(clippy::pedantic)]
-#![allow(clippy::module_name_repetitions)]
+// This file was generated with `clorinde`. Do not modify.
 
-//! Типобезопасные SQL-запросы для ERP.
-//!
-//! TODO: заменить на автогенерацию Clorinde CLI.
-//! Сейчас — ручные struct'ы и функции, повторяющие то,
-//! что Clorinde бы сгенерировал из `queries/*.sql`.
-
-pub mod common;
-pub mod warehouse;
+mod array_iterator;
+pub mod client;
+mod domain;
+#[allow(clippy::all, clippy::pedantic)]
+#[allow(unused_variables)]
+#[allow(unused_imports)]
+#[allow(dead_code)]
+pub mod queries;
+mod type_traits;
+#[allow(clippy::all, clippy::pedantic)]
+#[allow(unused_variables)]
+#[allow(unused_imports)]
+#[allow(dead_code)]
+pub mod types;
+mod utils;
+pub use array_iterator::ArrayIterator;
+#[cfg(feature = "deadpool")]
+pub use deadpool_postgres;
+pub use domain::{Domain, DomainArray};
+#[cfg(not(any(feature = "deadpool", feature = "wasm-async")))]
+pub use postgres;
+#[cfg(not(any(feature = "deadpool", feature = "wasm-async")))]
+pub use postgres::fallible_iterator;
+#[cfg(any(feature = "deadpool", feature = "wasm-async"))]
+pub use tokio_postgres;
+#[cfg(any(feature = "deadpool", feature = "wasm-async"))]
+pub use tokio_postgres::fallible_iterator;
+pub use type_traits::JsonSql;
+pub use type_traits::{ArraySql, BytesSql, IterSql, StringSql};
+pub(crate) use utils::slice_iter;

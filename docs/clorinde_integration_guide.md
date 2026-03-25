@@ -1,26 +1,37 @@
 # Clorinde: интеграция в ERP-проект
 > Как SQL-файлы превращаются в типобезопасный Rust-код
-> Дата: 2026-03-25 | Паттерн для всех Bounded Contexts
+> Дата: 2026-03-25 | Обновлено: 2026-03-25 (миграция на Clorinde CLI v1.4.0)
+> Паттерн для всех Bounded Contexts
 
 ---
 
 ## Что делает Clorinde
 
-Clorinde берёт `.sql` файлы с аннотированными запросами, **подключается к реальной PostgreSQL** (с актуальной схемой), валидирует каждый запрос и генерирует **отдельный Rust crate** с типобезопасными функциями.
+Clorinde берёт `.sql` файлы с аннотированными запросами, **подключается к реальной PostgreSQL** (с актуальной схемой), валидирует каждый запрос и генерирует **самодостаточный Rust crate** с типобезопасными функциями.
 
 ```
 Ты пишешь SQL      →  Clorinde проверяет  →  Получаешь Rust crate
 (queries/*.sql)        (против реальной БД)    (crates/clorinde-gen/)
 ```
 
-Если колонка `balance` в БД — `NUMERIC(18,4)`, сгенерированная функция принимает/возвращает `rust_decimal::Decimal`. Если запрос ссылается на несуществующую таблицу — ошибка **на этапе генерации**, до компиляции.
+Если запрос ссылается на несуществующую таблицу или колонку — ошибка **на этапе генерации**, до компиляции.
+
+---
+
+## Текущее состояние
+
+`crates/clorinde-gen/` — **автогенерированный** crate (Clorinde CLI v1.4.0). Все файлы в `src/` помечены `// This file was generated with clorinde. Do not modify.`.
+
+Генерация: `clorinde live -q queries/ -d crates/clorinde-gen "$DATABASE_URL"`
+
+После генерации нужно вручную поправить `name` в `Cargo.toml` на `"clorinde-gen"` (Clorinde генерирует `name = "clorinde"`).
 
 ---
 
 ## Структура проекта
 
 ```
-/home/dev/projects/erp/
+/home/raa/RustProjects/erp/
 │
 ├── queries/                          ← SQL-файлы (SOURCE OF TRUTH)
 │   ├── common/
@@ -31,7 +42,7 @@ Clorinde берёт `.sql` файлы с аннотированными запр
 │   │   ├── tenants.sql                  2 запроса к common.tenants
 │   │   └── domain_history.sql           1 запрос к common.domain_history
 │   │
-│   └── warehouse/                    ← Новый BC добавляет свою папку
+│   └── warehouse/
 │       ├── inventory.sql                3 запроса: find, create, insert movement
 │       └── balances.sql                 2 запроса: upsert, get balance
 │
@@ -39,21 +50,31 @@ Clorinde берёт `.sql` файлы с аннотированными запр
 │   ├── common/*.sql
 │   └── warehouse/*.sql
 │
-└── crates/clorinde-gen/              ← СГЕНЕРИРОВАННЫЙ crate (не редактируем руками!)
-    ├── Cargo.toml                       (генерируется Clorinde)
+└── crates/clorinde-gen/              ← АВТОГЕНЕРИРОВАННЫЙ crate (не редактируем руками!)
+    ├── Cargo.toml
     └── src/
         ├── lib.rs
-        └── queries/                     ← зеркалирует структуру queries/
-            ├── common/
-            │   ├── outbox.rs
-            │   ├── inbox.rs
-            │   └── ...
-            └── warehouse/
-                ├── inventory.rs
-                └── balances.rs
+        ├── client/                     ← GenericClient trait + deadpool support
+        │   ├── async_.rs
+        │   └── async_/
+        │       ├── generic_client.rs
+        │       └── deadpool.rs
+        ├── queries/                    ← зеркалирует структуру queries/
+        │   ├── common/
+        │   │   ├── outbox.rs
+        │   │   ├── inbox.rs
+        │   │   └── ...
+        │   └── warehouse/
+        │       ├── inventory.rs
+        │       └── balances.rs
+        ├── domain.rs
+        ├── type_traits.rs              ← StringSql, JsonSql, ArraySql
+        ├── types.rs
+        ├── array_iterator.rs
+        └── utils.rs
 ```
 
-**Правило:** один `.sql` файл = один подмодуль в сгенерированном crate. `queries/warehouse/inventory.sql` → `clorinde_gen::queries::warehouse::inventory`.
+**Правило:** один `.sql` файл = один подмодуль. `queries/warehouse/inventory.sql` → `clorinde_gen::queries::warehouse::inventory`.
 
 ---
 
@@ -65,7 +86,7 @@ Clorinde берёт `.sql` файлы с аннотированными запр
 -- queries/warehouse/inventory.sql
 
 --! find_item_by_sku
-SELECT i.id, b.balance
+SELECT i.id, COALESCE(b.balance, 0)::TEXT AS balance
 FROM warehouse.inventory_items i
 LEFT JOIN warehouse.inventory_balances b
     ON b.tenant_id = i.tenant_id AND b.item_id = i.id
@@ -80,26 +101,17 @@ INSERT INTO warehouse.stock_movements
     (tenant_id, id, item_id, event_type, quantity, balance_after,
      doc_number, correlation_id, user_id)
 VALUES
-    (:tenant_id, :id, :item_id, :event_type, :quantity, :balance_after,
+    (:tenant_id, :id, :item_id, :event_type,
+     :quantity::TEXT::NUMERIC, :balance_after::TEXT::NUMERIC,
      :doc_number, :correlation_id, :user_id);
 ```
 
 Ключевые элементы:
 - `--! query_name` — аннотация, имя запроса. Станет именем функции в Rust
-- `:param_name` — именованный параметр. Clorinde заменит на `$1, $2, ...` при генерации, но в Rust API будут **именованные поля**
-- Один `.sql` файл = несколько запросов. Группировка по смыслу (все операции с inventory в одном файле)
-
-### Контроль nullable
-
-```sql
---! find_item_by_sku : (balance?)
-SELECT i.id, b.balance
-FROM warehouse.inventory_items i
-LEFT JOIN warehouse.inventory_balances b ON ...
-WHERE i.tenant_id = :tenant_id AND i.sku = :sku;
-```
-
-`(balance?)` — поле `balance` может быть NULL (LEFT JOIN). В Rust будет `Option<BigDecimal>`.
+- `:param_name` — именованный параметр. Clorinde заменит на `$1, $2, ...` при генерации
+- `::TEXT::NUMERIC` — двойной cast для NUMERIC-колонок (tokio-postgres не имеет нативной поддержки BigDecimal, передаём как TEXT)
+- `::TEXT` в SELECT — читаем NUMERIC как строку
+- Один `.sql` файл = несколько запросов, группировка по смыслу
 
 ---
 
@@ -108,189 +120,181 @@ WHERE i.tenant_id = :tenant_id AND i.sku = :sku;
 Из `queries/warehouse/inventory.sql` Clorinde создаёт `src/queries/warehouse/inventory.rs`:
 
 ```rust
-// АВТОГЕНЕРИРОВАНО Clorinde — НЕ РЕДАКТИРОВАТЬ!
-// Source: queries/warehouse/inventory.sql
+// This file was generated with `clorinde`. Do not modify.
 
-use clorinde::GenericClient;
+// ─── Params structs ─────────────────────────────────────────────
 
-// ─── find_item_by_sku ───────────────────────────────────────────────
+// Текстовые поля — generic с trait bound StringSql (принимает &str, String, и т.д.)
+#[derive(Debug)]
+pub struct FindItemBySkuParams<T1: crate::StringSql> {
+    pub tenant_id: uuid::Uuid,
+    pub sku: T1,
+}
 
-/// Row struct — автогенерирован из SELECT колонок
+#[derive(Debug)]
+pub struct InsertMovementParams<T1: StringSql, T2: StringSql, T3: StringSql, T4: StringSql> {
+    pub tenant_id: uuid::Uuid,
+    pub id: uuid::Uuid,
+    pub item_id: uuid::Uuid,
+    pub event_type: T1,
+    pub quantity: T2,       // TEXT::NUMERIC — передаём строку
+    pub balance_after: T3,  // TEXT::NUMERIC — передаём строку
+    pub doc_number: T4,
+    pub correlation_id: uuid::Uuid,
+    pub user_id: uuid::Uuid,
+}
+
+// ─── Row structs ────────────────────────────────────────────────
+
+// Owned-версия (возвращается из .opt(), .one(), .all())
+#[derive(Debug, Clone, PartialEq)]
 pub struct FindItemBySku {
     pub id: uuid::Uuid,
-    pub balance: Option<rust_decimal::Decimal>,  // ? = Option
+    pub balance: String,  // NUMERIC→TEXT cast в SQL → String в Rust
 }
 
-/// Bind parameters — автогенерированы из :named_params
-pub struct FindItemBySkuParams<'a> {
-    pub tenant_id: &'a uuid::Uuid,
-    pub sku: &'a str,
+// Borrowed-версия (zero-copy, для .map())
+pub struct FindItemBySkuBorrowed<'a> {
+    pub id: uuid::Uuid,
+    pub balance: &'a str,
 }
 
-/// Выполнить запрос. Возвращает query object с методами .opt(), .one(), .all()
-pub fn find_item_by_sku() -> FindItemBySkuStmt {
-    FindItemBySkuStmt(clorinde::private::Stmt::new(
-        "SELECT i.id, b.balance FROM warehouse.inventory_items i ..."
-    ))
-}
+// ─── Query functions ────────────────────────────────────────────
+
+pub fn find_item_by_sku() -> FindItemBySkuStmt { ... }
 
 impl FindItemBySkuStmt {
-    /// Bind позиционных параметров
-    pub fn bind<'a, C: GenericClient>(
-        &'a self, client: &'a C,
-        tenant_id: &'a uuid::Uuid,
-        sku: &'a str,
-    ) -> FindItemBySkuQuery<'a, C> { ... }
-
-    /// Bind через struct
-    pub fn params<'a, C: GenericClient>(
-        &'a self, client: &'a C,
-        params: &'a FindItemBySkuParams<'_>,
-    ) -> FindItemBySkuQuery<'a, C> { ... }
-}
-
-// ─── create_item ────────────────────────────────────────────────────
-
-/// Нет Row struct — INSERT без RETURNING
-pub struct CreateItemParams<'a> {
-    pub tenant_id: &'a uuid::Uuid,
-    pub id: &'a uuid::Uuid,
-    pub sku: &'a str,
-}
-
-pub fn create_item() -> CreateItemStmt { ... }
-
-impl CreateItemStmt {
-    /// Возвращает количество affected rows (u64)
-    pub async fn bind<C: GenericClient>(
+    // Позиционные параметры
+    pub fn bind<C: GenericClient, T1: StringSql>(
         &self, client: &C,
         tenant_id: &uuid::Uuid,
-        id: &uuid::Uuid,
-        sku: &str,
-    ) -> Result<u64, tokio_postgres::Error> { ... }
+        sku: &T1,
+    ) -> FindItemBySkuQuery<..., FindItemBySku, 2> { ... }
 }
+
+// SELECT без RETURNING → .opt() / .one() / .all()
+// INSERT/UPDATE без RETURNING → .bind().await? → Result<u64>
+// INSERT с RETURNING → .bind().one().await? → Result<T>
 ```
 
 ### Маппинг типов PostgreSQL → Rust
 
-| PostgreSQL | Rust | Пример |
-|-----------|------|--------|
-| `UUID` | `uuid::Uuid` | tenant_id, item_id |
-| `TEXT` / `VARCHAR` | `&str` (params) / `String` (rows) | sku, event_type |
-| `NUMERIC(18,4)` | `rust_decimal::Decimal` | balance, quantity |
-| `TIMESTAMPTZ` | `chrono::DateTime<chrono::Utc>` | created_at |
-| `JSONB` | `serde_json::Value` | payload |
-| `BOOLEAN` | `bool` | published |
-| `BIGINT` / `BIGSERIAL` | `i64` | id, next_value |
-| `INTEGER` | `i32` | retry_count |
+| PostgreSQL | Rust (row) | Rust (param) | Пример |
+|-----------|-----------|-------------|--------|
+| `UUID` | `uuid::Uuid` | `&uuid::Uuid` | tenant_id, item_id |
+| `TEXT` / `VARCHAR` | `String` | `&T1: StringSql` | sku, event_type |
+| `NUMERIC::TEXT` | `String` | `&T: StringSql` | balance, quantity (через cast) |
+| `TIMESTAMPTZ` | `DateTime<FixedOffset>` | `&DateTime<FixedOffset>` | created_at |
+| `JSONB` | `serde_json::Value` | `&T: JsonSql` | payload |
+| `BOOLEAN` | `bool` | `&bool` | published |
+| `BIGINT` / `BIGSERIAL` | `i64` | `&i64` | id, next_value |
+| `INTEGER` | `i32` | `&i32` | retry_count |
+
+**Важно:** `TIMESTAMPTZ` маппится в `DateTime<FixedOffset>`, не `DateTime<Utc>`. При передаче из `RequestContext` (который хранит `DateTime<Utc>`) нужна конвертация: `timestamp.fixed_offset()`.
 
 ---
 
 ## Как используется в коде
 
-### Repository (warehouse)
+### GenericClient
+
+Clorinde генерирует свой trait `GenericClient` (в `crate::client::async_::GenericClient`), который реализован для:
+- `tokio_postgres::Client`
+- `tokio_postgres::Transaction`
+- `deadpool_postgres::Client` (через feature `deadpool`)
+
+Callers импортируют: `use clorinde_gen::client::GenericClient;`
+
+### Repository (warehouse) — реальный код
 
 ```rust
-// crates/warehouse/src/infrastructure/repos.rs
-// НИ ОДНОЙ SQL-СТРОКИ — только вызовы сгенерированного crate
-
-use clorinde_gen::queries::warehouse::{inventory, balances};
+use clorinde_gen::client::GenericClient;
 
 pub struct PgInventoryRepo;
 
 impl PgInventoryRepo {
     pub async fn find_by_sku(
-        client: &impl clorinde::GenericClient,
-        tenant_id: &uuid::Uuid,
+        client: &impl GenericClient,
+        tenant_id: TenantId,
         sku: &str,
-    ) -> Result<Option<(Uuid, Decimal)>, Error> {
-        // Вызов сгенерированной функции — типобезопасно
-        let row = inventory::find_item_by_sku()
-            .bind(client, tenant_id, sku)
+    ) -> Result<Option<(Uuid, BigDecimal)>> {
+        let tid = *tenant_id.as_uuid();
+        let row = clorinde_gen::queries::warehouse::inventory::find_item_by_sku()
+            .bind(client, &tid, &sku)
             .opt()
             .await?;
 
-        Ok(row.map(|r| (r.id, r.balance.unwrap_or_default())))
+        Ok(row.map(|r| {
+            let balance = BigDecimal::from_str(&r.balance)?;
+            Ok((r.id, balance))
+        }).transpose()?)
     }
 
     pub async fn create_item(
-        client: &impl clorinde::GenericClient,
-        tenant_id: &uuid::Uuid,
-        id: &uuid::Uuid,
+        client: &impl GenericClient,
+        tenant_id: TenantId,
+        item_id: Uuid,
         sku: &str,
-    ) -> Result<(), Error> {
-        inventory::create_item()
-            .bind(client, tenant_id, id, sku)
+    ) -> Result<()> {
+        let tid = *tenant_id.as_uuid();
+        clorinde_gen::queries::warehouse::inventory::create_item()
+            .bind(client, &tid, &item_id, &sku)
             .await?;
         Ok(())
     }
 
-    pub async fn upsert_balance(
-        client: &impl clorinde::GenericClient,
-        params: &balances::UpsertBalanceParams<'_>,
-    ) -> Result<(), Error> {
-        balances::upsert_balance()
-            .params(client, params)
+    pub async fn save_movement(
+        client: &impl GenericClient,
+        tenant_id: TenantId,
+        movement_id: Uuid,
+        /* ... */
+    ) -> Result<()> {
+        let tid = *tenant_id.as_uuid();
+        let qty_str = qty.to_string();  // BigDecimal → String для TEXT::NUMERIC cast
+        let bal_str = balance_after.to_string();
+
+        clorinde_gen::queries::warehouse::inventory::insert_movement()
+            .bind(client, &tid, &movement_id, &item_id,
+                  &event_type, &qty_str, &bal_str, &doc_number,
+                  &correlation_id, &user_id)
             .await?;
         Ok(())
     }
 }
 ```
 
-### Или через params struct (для запросов с 5+ параметрами)
+### Паттерн вызова
 
-```rust
-// Много параметров — struct удобнее
-let params = inventory::InsertMovementParams {
-    tenant_id: ctx.tenant_id.as_uuid(),
-    id: &movement_id,
-    item_id: &item_id,
-    event_type: "goods_received",
-    quantity: &qty,
-    balance_after: &new_balance,
-    doc_number: Some(&doc_number),
-    correlation_id: &ctx.correlation_id,
-    user_id: ctx.user_id.as_uuid(),
-};
-
-inventory::insert_movement().params(client, &params).await?;
-```
+| Тип запроса | Метод | Пример |
+|------------|-------|--------|
+| SELECT 0..1 строка | `.bind(...).opt().await?` | `find_item_by_sku()` |
+| SELECT ровно 1 | `.bind(...).one().await?` | `insert_audit_log()` (RETURNING id) |
+| SELECT N строк | `.bind(...).all().await?` | `get_unpublished_events()` |
+| INSERT/UPDATE | `.bind(...).await?` | `create_item()`, `mark_published()` |
 
 ---
 
-## Когда запускается генерация
+## Генерация
 
-### Момент запуска
+### CLI синтаксис (Clorinde v1.4.0)
 
-```
-Разработчик:
-  1. Пишет/меняет SQL в queries/*.sql
-  2. Пишет/меняет миграцию в migrations/*.sql
-  3. Применяет миграцию: just db-migrate
-  4. Запускает генерацию: just clorinde-generate
-  5. cargo build → компилятор проверяет что код соответствует сгенерированным типам
-```
-
-### Два режима генерации
-
-**`clorinde live`** — подключается к существующей БД (наш основной режим):
+**`clorinde live`** — подключается к существующей БД (основной режим разработки):
 ```bash
 clorinde live \
-  -u "$DATABASE_URL" \
+  -q queries/ \
   -d crates/clorinde-gen \
-  queries/
+  "$DATABASE_URL"
 ```
-Требует: миграции уже применены к БД.
+Требует: миграции уже применены к БД. URL — **позиционный аргумент** (не `-u`).
 
 **`clorinde schema`** — поднимает временный контейнер, применяет схему, генерирует:
 ```bash
 clorinde schema \
-  -s migrations/common/*.sql \
-  -s migrations/warehouse/*.sql \
+  -q queries/ \
   -d crates/clorinde-gen \
-  queries/
+  migrations/common/*.sql migrations/warehouse/*.sql
 ```
-Требует: Docker/Podman. Не нужна постоянная БД. Идеально для CI/CD.
+Требует: Docker/Podman. Не нужна постоянная БД. Для CI/CD.
 
 ### justfile рецепты
 
@@ -298,28 +302,26 @@ clorinde schema \
 # Генерация из живой БД (разработка)
 clorinde-generate:
     clorinde live \
-      -u "$(cat .env | grep DATABASE_URL | cut -d= -f2)" \
+      -q queries/ \
       -d crates/clorinde-gen \
-      queries/
-    @echo "clorinde-gen regenerated"
+      "$(grep DATABASE_URL .env | cut -d= -f2)"
+    @echo "clorinde-gen regenerated from live DB"
 
 # Генерация через временный контейнер (CI)
 clorinde-generate-ci:
     clorinde schema \
-      -s migrations/common/*.sql \
-      -s migrations/warehouse/*.sql \
+      -q queries/ \
       -d crates/clorinde-gen \
-      queries/
+      migrations/common/*.sql migrations/warehouse/*.sql
     @echo "clorinde-gen regenerated (CI mode)"
 ```
+
+**После генерации:** поправить `name = "clorinde"` → `name = "clorinde-gen"` в `crates/clorinde-gen/Cargo.toml`.
 
 ### CI/CD pipeline
 
 ```yaml
 steps:
-  - name: Apply migrations
-    run: psql $DATABASE_URL -f migrations/common/*.sql
-
   - name: Generate Clorinde
     run: just clorinde-generate
 
@@ -342,7 +344,7 @@ steps:
 -- queries/warehouse/inventory.sql (добавляем в конец)
 
 --! get_movements_by_item
-SELECT id, event_type, quantity, balance_after, doc_number, created_at
+SELECT id, event_type, quantity::TEXT, balance_after::TEXT, doc_number, created_at
 FROM warehouse.stock_movements
 WHERE tenant_id = :tenant_id AND item_id = :item_id
 ORDER BY created_at DESC
@@ -352,12 +354,13 @@ LIMIT :limit;
 **Шаг 2.** Перегенерировать:
 ```bash
 just clorinde-generate
+# Поправить name в Cargo.toml если перезаписался
 ```
 
 **Шаг 3.** Использовать в Rust (autocomplete работает!):
 ```rust
-let movements = inventory::get_movements_by_item()
-    .bind(client, tenant_id, &item_id, &50i64)
+let movements = clorinde_gen::queries::warehouse::inventory::get_movements_by_item()
+    .bind(client, &tenant_id, &item_id, &50i64)
     .all()
     .await?;
 
@@ -365,8 +368,6 @@ for m in movements {
     println!("{}: {} → balance {}", m.event_type, m.quantity, m.balance_after);
 }
 ```
-
-Компилятор проверяет: типы параметров, имена колонок, nullable. Если переименовать колонку в миграции и забыть обновить SQL — Clorinde выдаст ошибку при генерации.
 
 ---
 
@@ -401,57 +402,39 @@ just clorinde-generate
 
 # 5. Использовать
 # use clorinde_gen::queries::finance::journal;
-# journal::create_journal_entry().bind(&client, ...).one().await?;
+# journal::create_journal_entry().bind(client, ...).one().await?;
 ```
-
-Clorinde автоматически:
-- Создаёт `src/queries/finance/` модуль
-- Генерирует `journal.rs` со struct'ами и функциями
-- Обновляет `mod.rs` для включения нового модуля
-
----
-
-## Текущее состояние: ручной crate vs автогенерация
-
-Сейчас `crates/clorinde-gen/` — **ручной crate**, повторяющий то, что Clorinde сгенерировал бы. Каждый файл помечен `// TODO: заменить на автогенерацию Clorinde CLI`.
-
-**Почему ручной:**
-1. Clorinde CLI нужно установить и настроить на сервере разработки
-2. Нужна живая PostgreSQL со всеми миграциями для `clorinde live`
-3. Ручной crate позволяет продвигаться, не блокируясь на tooling
-
-**Переход на автогенерацию:**
-1. Установить: `cargo install clorinde`
-2. Применить все миграции
-3. Запустить: `just clorinde-generate`
-4. Удалить ручные файлы, коммитнуть сгенерированные
-5. Добавить `just clorinde-generate` в CI pipeline
-
-Ручной crate и автогенерированный — **один и тот же API**. Код, вызывающий `clorinde_gen::queries::warehouse::inventory::find_item_by_sku()`, не изменится.
 
 ---
 
 ## Зависимости сгенерированного crate
 
-Clorinde генерирует `Cargo.toml` автоматически:
+Clorinde генерирует **самодостаточный crate** (без внешней runtime-библиотеки):
 
 ```toml
 [package]
-name = "clorinde-gen"
+name = "clorinde-gen"   # ← вручную меняем с "clorinde" на "clorinde-gen"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-clorinde = "1.3"              # runtime библиотека (GenericClient, Params, etc.)
-tokio-postgres = { version = "0.7", features = ["with-uuid-1", "with-chrono-0_4", "with-serde_json-1"] }
-uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-serde_json = "1"
+deadpool-postgres = { version = "0.14", optional = true }
+futures = "0.3"
+postgres = { version = "0.19", optional = true }
+postgres-protocol = "0.6"
+postgres-types = { version = "0.2", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-rust_decimal = { version = "1", features = ["db-tokio-postgres"] }
+serde_json = { version = "1", features = ["raw_value"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"] }
+uuid = { version = "1", features = ["serde"] }
+
+[features]
+default = ["dep:postgres", "deadpool"]
+deadpool = ["dep:deadpool-postgres", "tokio-postgres/default"]
 ```
 
-**Ключевое:** сгенерированный crate зависит от `clorinde` (runtime), которая re-exports `tokio_postgres::GenericClient`. Весь наш код работает через `GenericClient` — тот же trait что в `tokio-postgres`.
+**Ключевое:** crate самодостаточен — содержит собственный `GenericClient` trait, type traits (`StringSql`, `JsonSql`), и клиентскую обвязку. Нет зависимости на внешний `clorinde` runtime.
 
 ---
 

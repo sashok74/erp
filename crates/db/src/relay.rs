@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use chrono::Utc;
 use event_bus::EventEnvelope;
 use event_bus::traits::EventBus;
 use kernel::types::{TenantId, UserId};
@@ -77,67 +78,47 @@ impl OutboxRelay {
         // BEGIN — FOR UPDATE SKIP LOCKED требует транзакцию.
         client.batch_execute("BEGIN").await?;
 
-        let rows = client
-            .query(
-                "SELECT id, tenant_id, event_id, event_type, source, payload, \
-                        correlation_id, causation_id, user_id, created_at, retry_count \
-                 FROM common.outbox \
-                 WHERE published = false AND retry_count < $1 \
-                 ORDER BY id \
-                 LIMIT $2 \
-                 FOR UPDATE SKIP LOCKED",
-                &[&MAX_RETRIES, &self.batch_size],
-            )
+        let rows = clorinde_gen::queries::common::outbox::get_unpublished_events()
+            .bind(&client, &self.batch_size)
+            .all()
             .await?;
 
         let mut published_count = 0;
 
         for row in &rows {
-            let id: i64 = row.get(0);
-            let tenant_id_uuid: uuid::Uuid = row.get(1);
-            let event_id: uuid::Uuid = row.get(2);
-            let event_type: String = row.get(3);
-            let source: String = row.get(4);
-            let payload: serde_json::Value = row.get(5);
-            let correlation_id: uuid::Uuid = row.get(6);
-            let causation_id: uuid::Uuid = row.get(7);
-            let user_id_uuid: uuid::Uuid = row.get(8);
-            let created_at: chrono::DateTime<chrono::Utc> = row.get(9);
+            // Skip entries that have exceeded max retries (clorinde query
+            // does not filter by retry_count, so we check here).
+            if row.retry_count >= MAX_RETRIES {
+                continue;
+            }
 
             let envelope = EventEnvelope {
-                event_id,
-                event_type,
-                source,
-                tenant_id: TenantId::from_uuid(tenant_id_uuid),
-                correlation_id,
-                causation_id,
-                user_id: UserId::from_uuid(user_id_uuid),
-                timestamp: created_at,
-                payload,
+                event_id: row.event_id,
+                event_type: row.event_type.clone(),
+                source: row.source.clone(),
+                tenant_id: TenantId::from_uuid(row.tenant_id),
+                correlation_id: row.correlation_id,
+                causation_id: row.causation_id,
+                user_id: UserId::from_uuid(row.user_id),
+                timestamp: row.created_at.with_timezone(&Utc),
+                payload: row.payload.clone(),
             };
 
             match self.bus.publish(envelope).await {
                 Ok(()) => {
-                    client
-                        .execute(
-                            "UPDATE common.outbox SET published = true, published_at = now() \
-                             WHERE id = $1",
-                            &[&id],
-                        )
+                    clorinde_gen::queries::common::outbox::mark_published()
+                        .bind(&client, &row.id)
                         .await?;
                     published_count += 1;
                 }
                 Err(e) => {
                     warn!(
-                        event_id = %event_id,
+                        event_id = %row.event_id,
                         error = %e,
                         "outbox publish failed, incrementing retry"
                     );
-                    client
-                        .execute(
-                            "UPDATE common.outbox SET retry_count = retry_count + 1 WHERE id = $1",
-                            &[&id],
-                        )
+                    clorinde_gen::queries::common::outbox::increment_retry()
+                        .bind(&client, &row.id)
                         .await?;
                 }
             }

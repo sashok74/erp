@@ -1,17 +1,53 @@
+# This file was generated with `clorinde`. Do not modify.
+# Package name changed to match workspace convention (clorinde-gen).
+
 [package]
 name = "clorinde-gen"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
+version = "0.1.0"
+edition = "2021"
 publish = false
 
-# TODO: заменить ручной crate на автогенерацию Clorinde CLI:
-#   clorinde generate --queries-path queries/ --destination crates/clorinde-gen/
+[dependencies.chrono]
+version = "0.4"
+features = ["serde"]
 
-[dependencies]
-tokio-postgres = { workspace = true }
-chrono = { workspace = true }
-uuid = { workspace = true }
-serde_json = { workspace = true }
-serde = { workspace = true }
+[dependencies.deadpool-postgres]
+version = "0.14"
+optional = true
+
+[dependencies.futures]
+version = "0.3"
+
+[dependencies.postgres]
+version = "0.19"
+features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"]
+optional = true
+
+[dependencies.postgres-protocol]
+version = "0.6"
+
+[dependencies.postgres-types]
+version = "0.2"
+features = ["derive"]
+
+[dependencies.serde]
+version = "1"
+features = ["derive"]
+
+[dependencies.serde_json]
+version = "1"
+features = ["raw_value"]
+
+[dependencies.tokio-postgres]
+version = "0.7"
+features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1"]
+default-features = false
+
+[dependencies.uuid]
+version = "1"
+features = ["serde"]
+
+[features]
+deadpool = ["dep:deadpool-postgres", "tokio-postgres/default"]
+default = ["dep:postgres", "deadpool"]
+wasm-async = ["tokio-postgres/js", "chrono/wasmbind"]

@@ -8,7 +8,7 @@ publish = false
 
 [dependencies]
 kernel = { workspace = true }
-tokio-postgres = { workspace = true }
+clorinde-gen = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }

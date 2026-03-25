@@ -10,6 +10,7 @@ publish = false
 kernel = { workspace = true }
 runtime = { workspace = true }
 db = { workspace = true }
+clorinde-gen = { workspace = true }
 tokio-postgres = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

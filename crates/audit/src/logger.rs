@@ -49,23 +49,21 @@ impl PgAuditLog {
         result: &serde_json::Value,
     ) -> Result<(), anyhow::Error> {
         let client = self.pool.get().await?;
-        let now = chrono::Utc::now();
-        client
-            .execute(
-                "INSERT INTO common.audit_log \
-                    (tenant_id, user_id, command_name, result, \
-                     correlation_id, causation_id, created_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
-                &[
-                    ctx.tenant_id.as_uuid(),
-                    ctx.user_id.as_uuid(),
-                    &command_name,
-                    result,
-                    &ctx.correlation_id,
-                    &ctx.causation_id,
-                    &now,
-                ],
+        let now = chrono::Utc::now().fixed_offset();
+        let tenant_id = *ctx.tenant_id.as_uuid();
+        let user_id = *ctx.user_id.as_uuid();
+        clorinde_gen::queries::common::audit::insert_audit_log()
+            .bind(
+                &client,
+                &tenant_id,
+                &user_id,
+                &command_name,
+                result,
+                &ctx.correlation_id,
+                &ctx.causation_id,
+                &now,
             )
+            .one()
             .await?;
         Ok(())
     }

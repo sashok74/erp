@@ -44,13 +44,8 @@ impl InboxGuard {
         source: &str,
     ) -> Result<bool, anyhow::Error> {
         let client = self.pool.get().await?;
-        let rows_affected = client
-            .execute(
-                "INSERT INTO common.inbox (event_id, event_type, source) \
-                 VALUES ($1, $2, $3) \
-                 ON CONFLICT (event_id) DO NOTHING",
-                &[&event_id, &event_type, &source],
-            )
+        let rows_affected = clorinde_gen::queries::common::inbox::try_insert_inbox()
+            .bind(&client, &event_id, &event_type, &source)
             .await?;
         Ok(rows_affected == 1)
     }

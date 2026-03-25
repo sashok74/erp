@@ -1,4 +1,4 @@
-//! SQL-запросы для common schema.
+// This file was generated with `clorinde`. Do not modify.
 
 pub mod audit;
 pub mod domain_history;

@@ -281,28 +281,34 @@ async fn clorinde_outbox_round_trip() {
 
     let tenant_id = Uuid::now_v7();
     let event_id = Uuid::now_v7();
-    let now = chrono::Utc::now();
+    let now = chrono::Utc::now().fixed_offset();
     let payload = serde_json::json!({"item": "BOLT-42", "qty": 100});
+    let correlation_id = Uuid::now_v7();
+    let causation_id = Uuid::now_v7();
+    let user_id = Uuid::now_v7();
 
     // Insert.
-    let params = clorinde_gen::common::outbox::InsertOutboxParams {
-        tenant_id,
-        event_id,
-        event_type: "erp.warehouse.goods_received.v1",
-        source: "warehouse",
-        payload: &payload,
-        correlation_id: Uuid::now_v7(),
-        causation_id: Uuid::now_v7(),
-        user_id: Uuid::now_v7(),
-        created_at: now,
-    };
-    let id = clorinde_gen::common::outbox::insert_outbox_entry(&**client, &params)
+    let id = clorinde_gen::queries::common::outbox::insert_outbox_entry()
+        .bind(
+            &client,
+            &tenant_id,
+            &event_id,
+            &"erp.warehouse.goods_received.v1",
+            &"warehouse",
+            &payload,
+            &correlation_id,
+            &causation_id,
+            &user_id,
+            &now,
+        )
+        .one()
         .await
         .unwrap();
     assert!(id > 0);
 
     // Mark published.
-    let affected = clorinde_gen::common::outbox::mark_published(&**client, id)
+    let affected = clorinde_gen::queries::common::outbox::mark_published()
+        .bind(&client, &id)
         .await
         .unwrap();
     assert_eq!(affected, 1);
@@ -325,7 +331,8 @@ async fn clorinde_sequences_round_trip() {
     let seq_name = "clorinde_test_seq";
 
     // Ensure sequence.
-    clorinde_gen::common::sequences::ensure_sequence(&**client, tenant_id, seq_name, "CT-")
+    clorinde_gen::queries::common::sequences::ensure_sequence()
+        .bind(&client, &tenant_id, &seq_name, &"CT-")
         .await
         .unwrap();
 
@@ -333,15 +340,17 @@ async fn clorinde_sequences_round_trip() {
     client.batch_execute("BEGIN").await.unwrap();
 
     // Get next_value.
-    let val = clorinde_gen::common::sequences::next_value(&**client, tenant_id, seq_name)
+    let val = clorinde_gen::queries::common::sequences::next_value()
+        .bind(&client, &tenant_id, &seq_name)
+        .one()
         .await
-        .unwrap()
-        .expect("sequence should exist");
+        .unwrap();
     assert_eq!(val.prefix, "CT-");
     assert_eq!(val.next_value, 1);
 
     // Increment.
-    clorinde_gen::common::sequences::increment_sequence(&**client, tenant_id, seq_name)
+    clorinde_gen::queries::common::sequences::increment_sequence()
+        .bind(&client, &tenant_id, &seq_name)
         .await
         .unwrap();
 
@@ -367,32 +376,26 @@ async fn clorinde_inbox_dedup() {
     let event_id = Uuid::now_v7();
 
     // First insert → 1 row.
-    let inserted = clorinde_gen::common::inbox::try_insert_inbox(
-        &**client,
-        event_id,
-        "erp.test.inbox.v1",
-        "test",
-    )
-    .await
-    .unwrap();
+    let inserted = clorinde_gen::queries::common::inbox::try_insert_inbox()
+        .bind(&client, &event_id, &"erp.test.inbox.v1", &"test")
+        .await
+        .unwrap();
     assert_eq!(inserted, 1, "first insert should succeed");
 
     // Duplicate → 0 rows (idempotent).
-    let dup = clorinde_gen::common::inbox::try_insert_inbox(
-        &**client,
-        event_id,
-        "erp.test.inbox.v1",
-        "test",
-    )
-    .await
-    .unwrap();
+    let dup = clorinde_gen::queries::common::inbox::try_insert_inbox()
+        .bind(&client, &event_id, &"erp.test.inbox.v1", &"test")
+        .await
+        .unwrap();
     assert_eq!(dup, 0, "duplicate insert should be no-op");
 
     // check_processed → true.
-    let processed = clorinde_gen::common::inbox::check_processed(&**client, event_id)
+    let processed = clorinde_gen::queries::common::inbox::check_processed()
+        .bind(&client, &event_id)
+        .opt()
         .await
         .unwrap();
-    assert!(processed, "event should be marked as processed");
+    assert!(processed.is_some(), "event should be marked as processed");
 
     // Cleanup.
     client
@@ -413,7 +416,9 @@ async fn clorinde_tenants_crud() {
     let slug = &format!("test-corp-{}", &id.to_string()[..8]);
 
     // Create.
-    let row = clorinde_gen::common::tenants::create_tenant(&**client, id, name, slug)
+    let row = clorinde_gen::queries::common::tenants::create_tenant()
+        .bind(&client, &id, &name, &slug)
+        .one()
         .await
         .unwrap();
     assert_eq!(row.id, id);
@@ -422,7 +427,9 @@ async fn clorinde_tenants_crud() {
     assert!(row.is_active);
 
     // Get by id.
-    let found = clorinde_gen::common::tenants::get_tenant(&**client, id)
+    let found = clorinde_gen::queries::common::tenants::get_tenant()
+        .bind(&client, &id)
+        .opt()
         .await
         .unwrap()
         .expect("tenant should exist");
@@ -442,19 +449,25 @@ async fn clorinde_audit_insert() {
     let pool = db::PgPool::new(&database_url()).unwrap();
     let client = pool.get().await.unwrap();
 
-    let now = chrono::Utc::now();
+    let now = chrono::Utc::now().fixed_offset();
     let result = serde_json::json!({"status": "ok"});
+    let tenant_id = Uuid::now_v7();
+    let user_id = Uuid::now_v7();
+    let correlation_id = Uuid::now_v7();
+    let causation_id = Uuid::now_v7();
 
-    let params = clorinde_gen::common::audit::InsertAuditParams {
-        tenant_id: Uuid::now_v7(),
-        user_id: Uuid::now_v7(),
-        command_name: "warehouse::receive_goods",
-        result: &result,
-        correlation_id: Uuid::now_v7(),
-        causation_id: Uuid::now_v7(),
-        created_at: now,
-    };
-    let id = clorinde_gen::common::audit::insert_audit_log(&**client, &params)
+    let id = clorinde_gen::queries::common::audit::insert_audit_log()
+        .bind(
+            &client,
+            &tenant_id,
+            &user_id,
+            &"warehouse::receive_goods",
+            &result,
+            &correlation_id,
+            &causation_id,
+            &now,
+        )
+        .one()
         .await
         .unwrap();
     assert!(id > 0);
@@ -473,23 +486,30 @@ async fn clorinde_domain_history_insert() {
     let pool = db::PgPool::new(&database_url()).unwrap();
     let client = pool.get().await.unwrap();
 
-    let now = chrono::Utc::now();
+    let now = chrono::Utc::now().fixed_offset();
     let old_state = serde_json::json!({"qty": 0});
     let new_state = serde_json::json!({"qty": 100});
+    let tenant_id = Uuid::now_v7();
+    let entity_id = Uuid::now_v7();
+    let correlation_id = Uuid::now_v7();
+    let causation_id = Uuid::now_v7();
+    let user_id = Uuid::now_v7();
 
-    let params = clorinde_gen::common::domain_history::InsertHistoryParams {
-        tenant_id: Uuid::now_v7(),
-        entity_type: "warehouse::inventory_item",
-        entity_id: Uuid::now_v7(),
-        event_type: "erp.warehouse.goods_received.v1",
-        old_state: Some(&old_state),
-        new_state: Some(&new_state),
-        correlation_id: Uuid::now_v7(),
-        causation_id: Uuid::now_v7(),
-        user_id: Uuid::now_v7(),
-        created_at: now,
-    };
-    let id = clorinde_gen::common::domain_history::insert_domain_history(&**client, &params)
+    let id = clorinde_gen::queries::common::domain_history::insert_domain_history()
+        .bind(
+            &client,
+            &tenant_id,
+            &"warehouse::inventory_item",
+            &entity_id,
+            &"erp.warehouse.goods_received.v1",
+            &old_state,
+            &new_state,
+            &correlation_id,
+            &causation_id,
+            &user_id,
+            &now,
+        )
+        .one()
         .await
         .unwrap();
     assert!(id > 0);
@@ -555,18 +575,23 @@ async fn relay_publishes_outbox_entry() {
     let event_id = envelope.event_id;
 
     let client = pool.get().await.unwrap();
-    let params = clorinde_gen::common::outbox::InsertOutboxParams {
-        tenant_id: *ctx.tenant_id.as_uuid(),
-        event_id: envelope.event_id,
-        event_type: &envelope.event_type,
-        source: &envelope.source,
-        payload: &envelope.payload,
-        correlation_id: envelope.correlation_id,
-        causation_id: envelope.causation_id,
-        user_id: *ctx.user_id.as_uuid(),
-        created_at: envelope.timestamp,
-    };
-    clorinde_gen::common::outbox::insert_outbox_entry(&**client, &params)
+    let tenant_id = *ctx.tenant_id.as_uuid();
+    let user_id = *ctx.user_id.as_uuid();
+    let created_at = envelope.timestamp.fixed_offset();
+    clorinde_gen::queries::common::outbox::insert_outbox_entry()
+        .bind(
+            &client,
+            &tenant_id,
+            &envelope.event_id,
+            &envelope.event_type,
+            &envelope.source,
+            &envelope.payload,
+            &envelope.correlation_id,
+            &envelope.causation_id,
+            &user_id,
+            &created_at,
+        )
+        .one()
         .await
         .unwrap();
     drop(client);
@@ -658,18 +683,23 @@ async fn relay_increments_retry_on_handler_error() {
         .await
         .unwrap();
 
-    let params = clorinde_gen::common::outbox::InsertOutboxParams {
-        tenant_id: *ctx.tenant_id.as_uuid(),
-        event_id: envelope.event_id,
-        event_type: &envelope.event_type,
-        source: &envelope.source,
-        payload: &envelope.payload,
-        correlation_id: envelope.correlation_id,
-        causation_id: envelope.causation_id,
-        user_id: *ctx.user_id.as_uuid(),
-        created_at: envelope.timestamp,
-    };
-    clorinde_gen::common::outbox::insert_outbox_entry(&**client, &params)
+    let tenant_id = *ctx.tenant_id.as_uuid();
+    let user_id = *ctx.user_id.as_uuid();
+    let created_at = envelope.timestamp.fixed_offset();
+    clorinde_gen::queries::common::outbox::insert_outbox_entry()
+        .bind(
+            &client,
+            &tenant_id,
+            &envelope.event_id,
+            &envelope.event_type,
+            &envelope.source,
+            &envelope.payload,
+            &envelope.correlation_id,
+            &envelope.causation_id,
+            &user_id,
+            &created_at,
+        )
+        .one()
         .await
         .unwrap();
     drop(client);
