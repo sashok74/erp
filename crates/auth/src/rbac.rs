@@ -99,6 +99,8 @@ pub fn default_erp_permissions() -> PermissionMap {
 
     map.grant(Role::Accountant, &["finance.*"]);
 
+    map.grant(Role::CatalogManager, &["catalog.create_product"]);
+
     map.grant(Role::SalesManager, &["sales.*"]);
 
     // Viewer — без доступа к командам (только queries)

@@ -24,6 +24,8 @@ pub enum Role {
     Accountant,
     /// Управление продажами: `sales.*`.
     SalesManager,
+    /// Управление каталогом: `catalog.*`.
+    CatalogManager,
     /// Только чтение. Нет доступа к командам.
     Viewer,
 }
@@ -38,6 +40,7 @@ impl Role {
             "warehouse_operator" => Some(Self::WarehouseOperator),
             "accountant" => Some(Self::Accountant),
             "sales_manager" => Some(Self::SalesManager),
+            "catalog_manager" => Some(Self::CatalogManager),
             "viewer" => Some(Self::Viewer),
             _ => None,
         }

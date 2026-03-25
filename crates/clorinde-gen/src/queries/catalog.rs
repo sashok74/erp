@@ -1,5 +1,3 @@
 // This file was generated with `clorinde`. Do not modify.
 
-pub mod catalog;
-pub mod common;
-pub mod warehouse;
+pub mod products;

@@ -11,6 +11,7 @@ members = [
     "crates/runtime",
     "crates/extensions",
     "crates/warehouse",
+    "crates/catalog",
     "crates/gateway",
 ]
 
@@ -91,3 +92,4 @@ seq_gen = { path = "crates/seq_gen" }
 runtime = { path = "crates/runtime" }
 extensions = { path = "crates/extensions" }
 warehouse = { path = "crates/warehouse" }
+catalog = { path = "crates/catalog" }

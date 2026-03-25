@@ -18,6 +18,14 @@ pub struct BalanceRow {
     pub balance: BigDecimal,
 }
 
+/// Строка проекции товара из каталога.
+#[derive(Debug)]
+pub struct ProductProjectionRow {
+    pub product_id: Uuid,
+    pub name: String,
+    pub category: String,
+}
+
 /// Repository для складских агрегатов.
 ///
 /// Делегирует SQL в `clorinde_gen::queries::warehouse`, конвертирует типы.
@@ -157,5 +165,28 @@ impl PgInventoryRepo {
             }
             None => Ok(None),
         }
+    }
+
+    /// Получить проекцию товара по SKU (из `warehouse.product_projections`).
+    ///
+    /// # Errors
+    ///
+    /// Возвращает ошибку при сбое SQL-запроса.
+    pub async fn get_product_projection(
+        client: &impl GenericClient,
+        tenant_id: TenantId,
+        sku: &str,
+    ) -> Result<Option<ProductProjectionRow>> {
+        let tid = *tenant_id.as_uuid();
+        let row = clorinde_gen::queries::warehouse::projections::get_projection_by_sku()
+            .bind(client, &tid, &sku)
+            .opt()
+            .await?;
+
+        Ok(row.map(|r| ProductProjectionRow {
+            product_id: r.product_id,
+            name: r.name,
+            category: r.category,
+        }))
     }
 }

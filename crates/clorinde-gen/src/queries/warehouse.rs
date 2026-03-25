@@ -2,3 +2,4 @@
 
 pub mod balances;
 pub mod inventory;
+pub mod projections;

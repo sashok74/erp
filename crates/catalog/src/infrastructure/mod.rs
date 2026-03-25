@@ -1,3 +1,2 @@
-pub mod event_handlers;
 pub mod repos;
 pub mod routes;

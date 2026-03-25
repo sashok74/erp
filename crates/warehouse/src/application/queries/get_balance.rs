@@ -25,6 +25,7 @@ pub struct BalanceResult {
     pub sku: String,
     pub balance: BigDecimal,
     pub item_id: Option<Uuid>,
+    pub product_name: Option<String>,
 }
 
 /// Handler запроса баланса.
@@ -64,16 +65,26 @@ impl QueryHandler for GetBalanceHandler {
             .await
             .map_err(|e| AppError::Internal(e.to_string()))?;
 
+        // Query product projection for name
+        let projection =
+            PgInventoryRepo::get_product_projection(&**client, ctx.tenant_id, &query.sku)
+                .await
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        let product_name = projection.map(|p| p.name);
+
         match row {
             Some(r) => Ok(BalanceResult {
                 sku: r.sku,
                 balance: r.balance,
                 item_id: Some(r.item_id),
+                product_name,
             }),
             None => Ok(BalanceResult {
                 sku: query.sku.clone(),
                 balance: BigDecimal::from(0),
                 item_id: None,
+                product_name,
             }),
         }
     }

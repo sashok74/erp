@@ -1,7 +1,7 @@
 {
 	"info": {
 		"name": "ERP Gateway",
-		"description": "ERP Gateway API — Warehouse BC + Health + Dev Token.\n\nПорядок использования:\n1. POST /dev/token → получить JWT\n2. Токен автоматически сохраняется в переменную {{token}}\n3. Остальные запросы используют Bearer {{token}}",
+		"description": "ERP Gateway API — Catalog + Warehouse BCs.\n\nПорядок использования:\n1. POST /dev/token → получить JWT\n2. Токен автоматически сохраняется в переменную {{token}}\n3. Остальные запросы используют Bearer {{token}}\n\nCross-context flow:\n  Create Product (Catalog) → relay → projection (Warehouse) → enriched GetBalance",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"variable": [
@@ -115,6 +115,41 @@
 							"path": ["dev", "token"]
 						},
 						"description": "Выдать JWT с ролью admin."
+					},
+					"response": []
+				},
+				{
+					"name": "Issue Token (catalog_manager)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var json = pm.response.json();",
+									"    pm.collectionVariables.set('token', json.token);",
+									"    pm.collectionVariables.set('tenant_id', json.tenant_id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"tenant_id\": \"{{tenant_id}}\",\n    \"roles\": [\"catalog_manager\"]\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/dev/token",
+							"host": ["{{base_url}}"],
+							"path": ["dev", "token"]
+						},
+						"description": "Выдать JWT с ролью catalog_manager."
 					},
 					"response": []
 				},
@@ -314,6 +349,70 @@
 							]
 						},
 						"description": "Несуществующий SKU — вернёт balance=0, item_id=null."
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Catalog",
+			"item": [
+				{
+					"name": "Create Product (BOLT-42)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{token}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"sku\": \"BOLT-42\",\n    \"name\": \"Болт М8\",\n    \"category\": \"Метизы\",\n    \"unit\": \"шт\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/catalog/products",
+							"host": ["{{base_url}}"],
+							"path": ["api", "catalog", "products"]
+						},
+						"description": "Создать товар в каталоге.\nТребует роль: catalog_manager или admin.\nТриггерит ProductCreated event → warehouse projection."
+					},
+					"response": []
+				},
+				{
+					"name": "Create Product (NUT-7)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{token}}" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"sku\": \"NUT-7\",\n    \"name\": \"Гайка М7\",\n    \"category\": \"Метизы\",\n    \"unit\": \"шт\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/api/catalog/products",
+							"host": ["{{base_url}}"],
+							"path": ["api", "catalog", "products"]
+						},
+						"description": "Создать второй товар."
+					},
+					"response": []
+				},
+				{
+					"name": "Get Product (BOLT-42)",
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Authorization", "value": "Bearer {{token}}" }
+						],
+						"url": {
+							"raw": "{{base_url}}/api/catalog/products?sku=BOLT-42",
+							"host": ["{{base_url}}"],
+							"path": ["api", "catalog", "products"],
+							"query": [{ "key": "sku", "value": "BOLT-42" }]
+						},
+						"description": "Получить товар по SKU из каталога."
 					},
 					"response": []
 				}

@@ -14,6 +14,7 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use axum::{Json, Router, routing};
 use serde::Deserialize;
+use event_bus::EventBus;
 use tracing::info;
 
 use config::AppConfig;
@@ -41,6 +42,9 @@ async fn main() {
     db::migrate::run_migrations(&pool, "migrations/warehouse")
         .await
         .expect("warehouse migrations failed");
+    db::migrate::run_migrations(&pool, "migrations/catalog")
+        .await
+        .expect("catalog migrations failed");
 
     // 5. Infrastructure services
     let bus = Arc::new(event_bus::InProcessBus::new());
@@ -62,6 +66,13 @@ async fn main() {
         extensions,
         audit_log,
     ));
+
+    // 6a. Register event handlers
+    let product_handler =
+        warehouse::infrastructure::event_handlers::ProductCreatedHandler::new(pool.clone());
+    let adapter = Arc::new(event_bus::EventHandlerAdapter::new(product_handler));
+    bus.subscribe("erp.catalog.product_created.v1", adapter)
+        .await;
 
     // 7. Outbox Relay (background task)
     let relay = db::OutboxRelay::new(
@@ -91,13 +102,15 @@ fn build_router(
     pool: Arc<db::PgPool>,
     jwt_service: Arc<auth::JwtService>,
 ) -> Router {
-    // Warehouse BC routes
-    let warehouse = warehouse::module::WarehouseModule::routes(pipeline, pool);
+    // BC routes
+    let warehouse = warehouse::module::WarehouseModule::routes(pipeline.clone(), pool.clone());
+    let catalog = catalog::module::CatalogModule::routes(pipeline, pool);
 
     // API routes — все BC под /api/{bc_name}, protected by JWT
     let jwt_for_middleware = jwt_service.clone();
     let api = Router::new()
         .nest("/warehouse", warehouse)
+        .nest("/catalog", catalog)
         .layer(axum::middleware::from_fn(move |req, next| {
             let svc = jwt_for_middleware.clone();
             async move { auth::auth_middleware(req, next, svc).await }

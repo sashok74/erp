@@ -63,6 +63,7 @@ pub struct BalanceResponse {
     pub sku: String,
     pub balance: String,
     pub item_id: Option<String>,
+    pub product_name: Option<String>,
 }
 
 impl From<BalanceResult> for BalanceResponse {
@@ -71,6 +72,7 @@ impl From<BalanceResult> for BalanceResponse {
             sku: r.sku,
             balance: r.balance.to_string(),
             item_id: r.item_id.map(|id| id.to_string()),
+            product_name: r.product_name,
         }
     }
 }

@@ -230,6 +230,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
+name = "catalog"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "audit",
+ "auth",
+ "axum",
+ "bigdecimal",
+ "chrono",
+ "clorinde-gen",
+ "db",
+ "event_bus",
+ "kernel",
+ "runtime",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "uuid",
+ "warehouse",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.57"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -533,6 +559,7 @@ dependencies = [
  "audit",
  "auth",
  "axum",
+ "catalog",
  "chrono",
  "db",
  "event_bus",
