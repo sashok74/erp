@@ -8,3 +8,4 @@
 //! что Clorinde бы сгенерировал из `queries/*.sql`.
 
 pub mod common;
+pub mod warehouse;

@@ -182,6 +182,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "bigdecimal"
+version = "0.4.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d6867f1565b3aad85681f1015055b087fcfd840d6aeee6eee7f2da317603695"
+dependencies = [
+ "autocfg",
+ "libm",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "serde",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -760,6 +774,12 @@ name = "libc"
 version = "0.2.183"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5b646652bf6661599e1da8901b3b9522896f01e736bad5f723fe7a3a27f899d"
+
+[[package]]
+name = "libm"
+version = "0.2.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libredox"
@@ -1707,6 +1727,28 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "warehouse"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "audit",
+ "auth",
+ "axum",
+ "bigdecimal",
+ "chrono",
+ "clorinde-gen",
+ "db",
+ "event_bus",
+ "kernel",
+ "runtime",
+ "seq_gen",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "wasi"
