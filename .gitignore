@@ -9,6 +9,7 @@
 # IDE
 .idea/
 .vscode/settings.json
+.zed/
 *.swp
 *~
 
