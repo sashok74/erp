@@ -530,10 +530,21 @@ dependencies = [
 name = "gateway"
 version = "0.1.0"
 dependencies = [
+ "audit",
+ "auth",
  "axum",
+ "chrono",
+ "db",
+ "event_bus",
+ "kernel",
+ "runtime",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+ "warehouse",
 ]
 
 [[package]]
