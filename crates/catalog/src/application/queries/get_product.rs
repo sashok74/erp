@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use kernel::{AppError, DomainError, RequestContext};
+use db::ReadDbContext;
+use kernel::{AppError, DomainError, IntoInternal, RequestContext};
 use runtime::query_handler::QueryHandler;
 use serde::Serialize;
 use uuid::Uuid;
@@ -50,20 +51,11 @@ impl QueryHandler for GetProductHandler {
         query: &Self::Query,
         ctx: &RequestContext,
     ) -> Result<Self::Result, AppError> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| AppError::Internal(format!("pool checkout: {e}")))?;
+        let db = ReadDbContext::acquire(&self.pool, ctx).await?;
 
-        // Set tenant context for RLS
-        db::rls::set_tenant_context(&**client, ctx.tenant_id)
+        let row = PgProductRepo::find_by_sku(db.client(), ctx.tenant_id, &query.sku)
             .await
-            .map_err(|e| AppError::Internal(format!("set tenant: {e}")))?;
-
-        let row = PgProductRepo::find_by_sku(&**client, ctx.tenant_id, &query.sku)
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+            .internal("find_by_sku")?;
 
         match row {
             Some(r) => Ok(ProductResult {

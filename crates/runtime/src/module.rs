@@ -1,7 +1,7 @@
 //! Контракт Bounded Context модуля.
 //!
-//! Gateway не знает конкретные BC. Каждый BC регистрируется как модуль:
-//! отдаёт HTTP routes и подписывает event handler'ы на шину.
+//! Каждый BC регистрируется как модуль: подписывает event handler'ы на шину.
+//! HTTP-маршруты строятся в gateway (delivery-слой), а не в runtime.
 
 use async_trait::async_trait;
 use event_bus::traits::EventBus;
@@ -9,14 +9,11 @@ use event_bus::traits::EventBus;
 /// Модуль Bounded Context — точка регистрации BC в системе.
 ///
 /// Каждый BC (Warehouse, Finance, ...) реализует этот trait.
-/// Gateway собирает модули и объединяет их routes в единый HTTP-сервер.
+/// HTTP-маршрутизация — ответственность gateway (`BcRouter`).
 #[async_trait]
 pub trait BoundedContextModule: Send + Sync + 'static {
     /// Имя BC: `"warehouse"`, `"finance"`, `"audit"`.
     fn name(&self) -> &'static str;
-
-    /// HTTP-маршруты модуля. Монтируются в общий Router gateway'ем.
-    fn routes(&self) -> axum::Router;
 
     /// Зарегистрировать event handler'ы на шине.
     /// Вызывается при старте приложения.

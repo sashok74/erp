@@ -7,14 +7,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bigdecimal::BigDecimal;
-use event_bus::EventEnvelope;
-use kernel::entity::AggregateRoot;
+use db::PgCommandContext;
 use kernel::types::EntityId;
-use kernel::{AppError, Command, RequestContext};
+use kernel::{AppError, Command, IntoInternal, RequestContext};
 use runtime::command_handler::CommandHandler;
 use runtime::ports::UnitOfWork;
 use serde::Serialize;
-use tokio_postgres::Client;
 use uuid::Uuid;
 
 use crate::domain::aggregates::InventoryItem;
@@ -57,7 +55,6 @@ impl ReceiveGoodsHandler {
 }
 
 #[async_trait]
-#[allow(clippy::too_many_lines)]
 impl CommandHandler for ReceiveGoodsHandler {
     type Cmd = ReceiveGoodsCommand;
     type Result = ReceiveGoodsResult;
@@ -72,128 +69,102 @@ impl CommandHandler for ReceiveGoodsHandler {
         let sku = Sku::new(&cmd.sku)?;
         let qty = Quantity::new(cmd.quantity.clone())?;
 
-        // Scope the PgUnitOfWork borrow — collect envelopes, then add to uow after.
-        let (result, envelopes) = {
-            // 2. Downcast UoW → PgUnitOfWork → client
-            let pg = uow
-                .as_any_mut()
-                .downcast_mut::<db::PgUnitOfWork>()
-                .ok_or_else(|| AppError::Internal("expected PgUnitOfWork".into()))?;
-            // Explicit type: deref chain Object → ClientWrapper → Client
-            let client: &Client = pg.client();
+        // 2. Downcast UoW → PgCommandContext
+        let mut db = PgCommandContext::from_uow(uow)?;
 
-            // 3. Find or create InventoryItem
-            let (item_id, old_balance) =
-                if let Some((id, balance)) =
-                    PgInventoryRepo::find_by_sku(client, ctx.tenant_id, sku.as_str())
-                        .await
-                        .map_err(|e| AppError::Internal(format!("find_by_sku: {e}")))?
-                {
-                    (id, balance)
-                } else {
-                    let new_id = EntityId::new();
-                    PgInventoryRepo::create_item(
-                        client,
-                        ctx.tenant_id,
-                        *new_id.as_uuid(),
-                        sku.as_str(),
-                    )
+        // 3. Find or create InventoryItem
+        let (item_id, old_balance) =
+            if let Some((id, balance)) =
+                PgInventoryRepo::find_by_sku(db.client(), ctx.tenant_id, sku.as_str())
                     .await
-                    .map_err(|e| AppError::Internal(format!("create_item: {e}")))?;
-                    (*new_id.as_uuid(), BigDecimal::from(0))
-                };
+                    .internal("find_by_sku")?
+            {
+                (id, balance)
+            } else {
+                let new_id = EntityId::new();
+                PgInventoryRepo::create_item(
+                    db.client(),
+                    ctx.tenant_id,
+                    *new_id.as_uuid(),
+                    sku.as_str(),
+                )
+                .await
+                .internal("create_item")?;
+                (*new_id.as_uuid(), BigDecimal::from(0))
+            };
 
-            // 4. Domain: item.receive()
-            let old_balance_qty = Quantity::new(old_balance.clone())
-                .map_err(|e| AppError::Internal(e.to_string()))?;
-            let mut item = InventoryItem::from_state(
-                EntityId::from_uuid(item_id),
-                sku.clone(),
-                old_balance_qty,
-            );
+        // 4. Domain: item.receive()
+        let old_balance_qty =
+            Quantity::new(old_balance.clone()).internal("balance")?;
+        let mut item = InventoryItem::from_state(
+            EntityId::from_uuid(item_id),
+            sku.clone(),
+            old_balance_qty,
+        );
 
-            // 5. SeqGen: номер документа
-            let doc_number = seq_gen::PgSequenceGenerator::next_value(
-                client,
-                ctx.tenant_id,
-                "warehouse.receipt",
-                "ПРХ-",
-            )
-            .await
-            .map_err(|e| AppError::Internal(format!("seq_gen: {e}")))?;
+        // 5. SeqGen: номер документа
+        let doc_number = seq_gen::PgSequenceGenerator::next_value(
+            db.client(),
+            ctx.tenant_id,
+            "warehouse.receipt",
+            "ПРХ-",
+        )
+        .await
+        .internal("seq_gen")?;
 
-            let event = item.receive(&qty, doc_number.clone())?;
-            let new_balance = event.new_balance.clone();
-            let movement_id = Uuid::now_v7();
+        let event = item.receive(&qty, doc_number.clone())?;
+        let new_balance = event.new_balance.clone();
+        let movement_id = Uuid::now_v7();
 
-            // 6. Repo: save movement + upsert balance
-            PgInventoryRepo::save_movement(
-                client,
-                ctx.tenant_id,
-                movement_id,
-                item_id,
-                "goods_received",
-                &event.quantity,
-                &event.new_balance,
-                &doc_number,
-                ctx.correlation_id,
-                *ctx.user_id.as_uuid(),
-            )
-            .await
-            .map_err(|e| AppError::Internal(format!("save_movement: {e}")))?;
+        // 6. Repo: save movement + upsert balance
+        PgInventoryRepo::save_movement(
+            db.client(),
+            ctx.tenant_id,
+            movement_id,
+            item_id,
+            "goods_received",
+            &event.quantity,
+            &event.new_balance,
+            &doc_number,
+            ctx.correlation_id,
+            *ctx.user_id.as_uuid(),
+        )
+        .await
+        .internal("save_movement")?;
 
-            PgInventoryRepo::upsert_balance(
-                client,
-                ctx.tenant_id,
-                item_id,
-                sku.as_str(),
-                &event.new_balance,
-                movement_id,
-            )
-            .await
-            .map_err(|e| AppError::Internal(format!("upsert_balance: {e}")))?;
+        PgInventoryRepo::upsert_balance(
+            db.client(),
+            ctx.tenant_id,
+            item_id,
+            sku.as_str(),
+            &event.new_balance,
+            movement_id,
+        )
+        .await
+        .internal("upsert_balance")?;
 
-            // 7. Domain history: old → new state
-            let old_state = serde_json::json!({ "balance": old_balance.to_string() });
-            let new_state = serde_json::json!({ "balance": new_balance.to_string() });
-            audit::DomainHistoryWriter::record(
-                client,
-                ctx,
-                "inventory_item",
-                item_id,
-                "erp.warehouse.goods_received.v1",
-                Some(&old_state),
-                Some(&new_state),
-            )
-            .await
-            .map_err(|e| AppError::Internal(format!("domain_history: {e}")))?;
+        // 7. Domain history: old → new state
+        let old_state = serde_json::json!({ "balance": old_balance.to_string() });
+        let new_state = serde_json::json!({ "balance": new_balance.to_string() });
+        audit::DomainHistoryWriter::record_change(
+            db.client(),
+            ctx,
+            "inventory_item",
+            item_id,
+            "erp.warehouse.goods_received.v1",
+            Some(&old_state),
+            Some(&new_state),
+        )
+        .await?;
 
-            // 8. Collect outbox envelopes
-            let events = item.take_events();
-            let mut envelopes = Vec::with_capacity(events.len());
-            for evt in &events {
-                let envelope = EventEnvelope::from_domain_event(evt, ctx, "warehouse")
-                    .map_err(|e| AppError::Internal(e.to_string()))?;
-                envelopes.push(envelope);
-            }
+        // 8. Emit events to outbox
+        db.emit_events(&mut item, ctx, "warehouse")?;
 
-            (
-                ReceiveGoodsResult {
-                    item_id,
-                    movement_id,
-                    new_balance,
-                    doc_number,
-                },
-                envelopes,
-            )
-        };
-        // pg/client dropped — borrow released
-
-        // 9. Add outbox entries
-        for envelope in envelopes {
-            uow.add_outbox_entry(envelope);
-        }
-
-        Ok(result)
+        Ok(ReceiveGoodsResult {
+            item_id,
+            movement_id,
+            new_balance,
+            doc_number,
+        })
     }
 }

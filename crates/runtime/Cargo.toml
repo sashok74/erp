@@ -15,5 +15,4 @@ serde_json = { workspace = true }
 async-trait = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
-axum = { workspace = true }
 uuid = { workspace = true }

@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bigdecimal::BigDecimal;
-use kernel::{AppError, RequestContext};
+use db::ReadDbContext;
+use kernel::{AppError, IntoInternal, RequestContext};
 use runtime::query_handler::QueryHandler;
 use serde::Serialize;
 use uuid::Uuid;
@@ -50,26 +51,17 @@ impl QueryHandler for GetBalanceHandler {
         query: &Self::Query,
         ctx: &RequestContext,
     ) -> Result<Self::Result, AppError> {
-        let client = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| AppError::Internal(format!("pool checkout: {e}")))?;
+        let db = ReadDbContext::acquire(&self.pool, ctx).await?;
 
-        // Set tenant context for RLS
-        db::rls::set_tenant_context(&**client, ctx.tenant_id)
+        let row = PgInventoryRepo::get_balance(db.client(), ctx.tenant_id, &query.sku)
             .await
-            .map_err(|e| AppError::Internal(format!("set tenant: {e}")))?;
-
-        let row = PgInventoryRepo::get_balance(&**client, ctx.tenant_id, &query.sku)
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
+            .internal("get_balance")?;
 
         // Query product projection for name
         let projection =
-            PgInventoryRepo::get_product_projection(&**client, ctx.tenant_id, &query.sku)
+            PgInventoryRepo::get_product_projection(db.client(), ctx.tenant_id, &query.sku)
                 .await
-                .map_err(|e| AppError::Internal(e.to_string()))?;
+                .internal("get_product_projection")?;
 
         let product_name = projection.map(|p| p.name);
 

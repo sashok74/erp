@@ -100,6 +100,11 @@ impl PgUnitOfWork {
         &mut self.client
     }
 
+    /// Добавить outbox-запись напрямую (для `PgCommandContext`).
+    pub(crate) fn push_outbox_entry(&mut self, envelope: EventEnvelope) {
+        self.outbox_entries.push(envelope);
+    }
+
     /// INSERT всех outbox entries в `common.outbox` (внутри текущей TX).
     async fn flush_outbox(&self) -> Result<(), AppError> {
         for entry in &self.outbox_entries {

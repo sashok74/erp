@@ -7,7 +7,8 @@
 //! Handler получает writer и вызывает `record()` через то же соединение.
 
 use clorinde_gen::client::GenericClient;
-use kernel::RequestContext;
+use kernel::{AppError, IntoInternal, RequestContext};
+use serde::Serialize;
 use uuid::Uuid;
 
 /// Writer для domain history — снимки old/new state.
@@ -60,5 +61,43 @@ impl DomainHistoryWriter {
             .one()
             .await?;
         Ok(id)
+    }
+
+    /// Записать изменение с автоматической сериализацией old/new state.
+    ///
+    /// Обёртка над `record()`: принимает `&impl Serialize` вместо `&serde_json::Value`,
+    /// маппит ошибки в `AppError::Internal`.
+    ///
+    /// # Errors
+    ///
+    /// `AppError::Internal` при ошибке сериализации или SQL.
+    pub async fn record_change<O: Serialize, N: Serialize>(
+        client: &impl GenericClient,
+        ctx: &RequestContext,
+        entity_type: &str,
+        entity_id: Uuid,
+        event_type: &str,
+        old: Option<&O>,
+        new: Option<&N>,
+    ) -> Result<i64, AppError> {
+        let old_val = old
+            .map(serde_json::to_value)
+            .transpose()
+            .internal("serialize old_state")?;
+        let new_val = new
+            .map(serde_json::to_value)
+            .transpose()
+            .internal("serialize new_state")?;
+        Self::record(
+            client,
+            ctx,
+            entity_type,
+            entity_id,
+            event_type,
+            old_val.as_ref(),
+            new_val.as_ref(),
+        )
+        .await
+        .internal("domain_history")
     }
 }

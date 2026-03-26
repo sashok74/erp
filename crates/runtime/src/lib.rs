@@ -13,6 +13,7 @@
 //! Stub-реализации ([`stubs`]) позволяют тестировать без БД.
 
 pub mod command_handler;
+pub mod dto;
 pub mod module;
 pub mod pipeline;
 pub mod ports;
@@ -21,6 +22,7 @@ pub mod stubs;
 
 // Re-exports для удобства: `use runtime::CommandPipeline`
 pub use command_handler::CommandHandler;
+pub use dto::{FromBody, FromQueryParams};
 pub use module::BoundedContextModule;
 pub use pipeline::CommandPipeline;
 pub use ports::{AuditLog, ExtensionHooks, PermissionChecker, UnitOfWork, UnitOfWorkFactory};

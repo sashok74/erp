@@ -6,14 +6,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use event_bus::EventEnvelope;
-use kernel::entity::AggregateRoot;
+use db::PgCommandContext;
 use kernel::types::EntityId;
-use kernel::{AppError, Command, RequestContext};
+use kernel::{AppError, Command, IntoInternal, RequestContext};
 use runtime::command_handler::CommandHandler;
 use runtime::ports::UnitOfWork;
 use serde::Serialize;
-use tokio_postgres::Client;
 use uuid::Uuid;
 
 use crate::domain::aggregates::Product;
@@ -70,90 +68,65 @@ impl CommandHandler for CreateProductHandler {
         let sku = Sku::new(&cmd.sku)?;
         let name = ProductName::new(&cmd.name)?;
 
-        // Scope the PgUnitOfWork borrow — collect envelopes, then add to uow after.
-        let (result, envelopes) = {
-            // 2. Downcast UoW → PgUnitOfWork → client
-            let pg = uow
-                .as_any_mut()
-                .downcast_mut::<db::PgUnitOfWork>()
-                .ok_or_else(|| AppError::Internal("expected PgUnitOfWork".into()))?;
-            let client: &Client = pg.client();
+        // 2. Downcast UoW → PgCommandContext
+        let mut db = PgCommandContext::from_uow(uow)?;
 
-            // 3. Check duplicate
-            if PgProductRepo::find_by_sku(client, ctx.tenant_id, sku.as_str())
-                .await
-                .map_err(|e| AppError::Internal(format!("find_by_sku: {e}")))?
-                .is_some()
-            {
-                return Err(CatalogDomainError::DuplicateSku(cmd.sku.clone()).into());
-            }
-
-            // 4. Create aggregate
-            let product_id = EntityId::new();
-            let mut product = Product::create(
-                product_id,
-                ctx.tenant_id,
-                sku.clone(),
-                name,
-                cmd.category.clone(),
-                cmd.unit.clone(),
-            );
-
-            // 5. Persist
-            PgProductRepo::create_product(
-                client,
-                ctx.tenant_id,
-                *product_id.as_uuid(),
-                sku.as_str(),
-                product.name().as_str(),
-                product.category(),
-                product.unit(),
-            )
+        // 3. Check duplicate
+        if PgProductRepo::find_by_sku(db.client(), ctx.tenant_id, sku.as_str())
             .await
-            .map_err(|e| AppError::Internal(format!("create_product: {e}")))?;
-
-            // 6. Domain history
-            let new_state = serde_json::json!({
-                "sku": sku.as_str(),
-                "name": product.name().as_str(),
-                "category": product.category(),
-                "unit": product.unit(),
-            });
-            audit::DomainHistoryWriter::record(
-                client,
-                ctx,
-                "product",
-                *product_id.as_uuid(),
-                "erp.catalog.product_created.v1",
-                None,
-                Some(&new_state),
-            )
-            .await
-            .map_err(|e| AppError::Internal(format!("domain_history: {e}")))?;
-
-            // 7. Collect outbox envelopes
-            let events = product.take_events();
-            let mut envelopes = Vec::with_capacity(events.len());
-            for evt in &events {
-                let envelope = EventEnvelope::from_domain_event(evt, ctx, "catalog")
-                    .map_err(|e| AppError::Internal(e.to_string()))?;
-                envelopes.push(envelope);
-            }
-
-            (
-                CreateProductResult {
-                    product_id: *product_id.as_uuid(),
-                },
-                envelopes,
-            )
-        };
-        // pg/client dropped — borrow released
-
-        // 8. Add outbox entries
-        for envelope in envelopes {
-            uow.add_outbox_entry(envelope);
+            .internal("find_by_sku")?
+            .is_some()
+        {
+            return Err(CatalogDomainError::DuplicateSku(cmd.sku.clone()).into());
         }
 
-        Ok(result)
+        // 4. Create aggregate
+        let product_id = EntityId::new();
+        let mut product = Product::create(
+            product_id,
+            ctx.tenant_id,
+            sku.clone(),
+            name,
+            cmd.category.clone(),
+            cmd.unit.clone(),
+        );
+
+        // 5. Persist
+        PgProductRepo::create_product(
+            db.client(),
+            ctx.tenant_id,
+            *product_id.as_uuid(),
+            sku.as_str(),
+            product.name().as_str(),
+            product.category(),
+            product.unit(),
+        )
+        .await
+        .internal("create_product")?;
+
+        // 6. Domain history
+        let new_state = serde_json::json!({
+            "sku": sku.as_str(),
+            "name": product.name().as_str(),
+            "category": product.category(),
+            "unit": product.unit(),
+        });
+        audit::DomainHistoryWriter::record_change(
+            db.client(),
+            ctx,
+            "product",
+            *product_id.as_uuid(),
+            "erp.catalog.product_created.v1",
+            None::<&serde_json::Value>,
+            Some(&new_state),
+        )
+        .await?;
+
+        // 7. Emit events to outbox
+        db.emit_events(&mut product, ctx, "catalog")?;
+
+        Ok(CreateProductResult {
+            product_id: *product_id.as_uuid(),
+        })
     }
 }
