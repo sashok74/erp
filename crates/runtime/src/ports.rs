@@ -64,6 +64,24 @@ pub trait ExtensionHooks: Send + Sync + 'static {
         command_name: &str,
         ctx: &RequestContext,
     ) -> Result<(), anyhow::Error>;
+
+    /// Хук перед выполнением запроса. Может отменить выполнение.
+    ///
+    /// Default: no-op (разрешает).
+    async fn before_query(&self, _query_name: &str, _ctx: &RequestContext) -> Result<(), AppError> {
+        Ok(())
+    }
+
+    /// Хук после выполнения запроса. Fire-and-forget — ошибки логируются.
+    ///
+    /// Default: no-op.
+    async fn after_query(
+        &self,
+        _query_name: &str,
+        _ctx: &RequestContext,
+    ) -> Result<(), anyhow::Error> {
+        Ok(())
+    }
 }
 
 /// Фабрика Unit of Work — создаёт транзакцию для каждой команды.

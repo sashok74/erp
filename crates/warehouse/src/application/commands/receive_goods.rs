@@ -73,34 +73,29 @@ impl CommandHandler for ReceiveGoodsHandler {
         let mut db = PgCommandContext::from_uow(uow)?;
 
         // 3. Find or create InventoryItem
-        let (item_id, old_balance) =
-            if let Some((id, balance)) =
-                PgInventoryRepo::find_by_sku(db.client(), ctx.tenant_id, sku.as_str())
-                    .await
-                    .internal("find_by_sku")?
-            {
-                (id, balance)
-            } else {
-                let new_id = EntityId::new();
-                PgInventoryRepo::create_item(
-                    db.client(),
-                    ctx.tenant_id,
-                    *new_id.as_uuid(),
-                    sku.as_str(),
-                )
+        let (item_id, old_balance) = if let Some((id, balance)) =
+            PgInventoryRepo::find_by_sku(db.client(), ctx.tenant_id, sku.as_str())
                 .await
-                .internal("create_item")?;
-                (*new_id.as_uuid(), BigDecimal::from(0))
-            };
+                .internal("find_by_sku")?
+        {
+            (id, balance)
+        } else {
+            let new_id = EntityId::new();
+            PgInventoryRepo::create_item(
+                db.client(),
+                ctx.tenant_id,
+                *new_id.as_uuid(),
+                sku.as_str(),
+            )
+            .await
+            .internal("create_item")?;
+            (*new_id.as_uuid(), BigDecimal::from(0))
+        };
 
         // 4. Domain: item.receive()
-        let old_balance_qty =
-            Quantity::new(old_balance.clone()).internal("balance")?;
-        let mut item = InventoryItem::from_state(
-            EntityId::from_uuid(item_id),
-            sku.clone(),
-            old_balance_qty,
-        );
+        let old_balance_qty = Quantity::new(old_balance.clone()).internal("balance")?;
+        let mut item =
+            InventoryItem::from_state(EntityId::from_uuid(item_id), sku.clone(), old_balance_qty);
 
         // 5. SeqGen: номер документа
         let doc_number = seq_gen::PgSequenceGenerator::next_value(
@@ -143,19 +138,17 @@ impl CommandHandler for ReceiveGoodsHandler {
         .await
         .internal("upsert_balance")?;
 
-        // 7. Domain history: old → new state
+        // 7. Domain history: old → new state (deferred — flush в commit)
         let old_state = serde_json::json!({ "balance": old_balance.to_string() });
         let new_state = serde_json::json!({ "balance": new_balance.to_string() });
-        audit::DomainHistoryWriter::record_change(
-            db.client(),
+        db.record_change(
             ctx,
             "inventory_item",
             item_id,
             "erp.warehouse.goods_received.v1",
             Some(&old_state),
             Some(&new_state),
-        )
-        .await?;
+        )?;
 
         // 8. Emit events to outbox
         db.emit_events(&mut item, ctx, "warehouse")?;

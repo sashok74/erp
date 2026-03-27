@@ -38,12 +38,8 @@ impl DomainHistoryWriter {
         let tenant_id = *ctx.tenant_id.as_uuid();
         let user_id = *ctx.user_id.as_uuid();
         // Convert Option<&Value> to serde_json::Value for JsonSql trait compatibility.
-        let old_state_val = old_state
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        let new_state_val = new_state
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
+        let old_state_val = old_state.cloned().unwrap_or(serde_json::Value::Null);
+        let new_state_val = new_state.cloned().unwrap_or(serde_json::Value::Null);
         let id = clorinde_gen::queries::common::domain_history::insert_domain_history()
             .bind(
                 client,
@@ -71,6 +67,7 @@ impl DomainHistoryWriter {
     /// # Errors
     ///
     /// `AppError::Internal` при ошибке сериализации или SQL.
+    #[deprecated(note = "use PgCommandContext::record_change (deferred, flush в commit)")]
     pub async fn record_change<O: Serialize, N: Serialize>(
         client: &impl GenericClient,
         ctx: &RequestContext,

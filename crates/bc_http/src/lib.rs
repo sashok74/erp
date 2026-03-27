@@ -34,6 +34,7 @@ use runtime::dto::{FromBody, FromQueryParams};
 use runtime::pipeline::CommandPipeline;
 use runtime::ports::UnitOfWorkFactory;
 use runtime::query_handler::QueryHandler;
+use runtime::query_pipeline::QueryPipeline;
 
 /// Типобезопасный маршрутизатор для Bounded Context.
 ///
@@ -43,15 +44,17 @@ use runtime::query_handler::QueryHandler;
 /// типобезопасное создание handler'ов без `dyn Any` + downcast.
 pub struct BcRouter<UF: UnitOfWorkFactory> {
     pipeline: Arc<CommandPipeline<UF>>,
+    query_pipeline: Arc<QueryPipeline>,
     router: Router,
 }
 
 impl<UF: UnitOfWorkFactory + 'static> BcRouter<UF> {
     /// Создать новый маршрутизатор.
     #[must_use]
-    pub fn new(pipeline: Arc<CommandPipeline<UF>>) -> Self {
+    pub fn new(pipeline: Arc<CommandPipeline<UF>>, query_pipeline: Arc<QueryPipeline>) -> Self {
         Self {
             pipeline,
+            query_pipeline,
             router: Router::new(),
         }
     }
@@ -118,6 +121,7 @@ impl<UF: UnitOfWorkFactory + 'static> BcRouter<UF> {
     ///
     /// Handler создаётся через closure-фабрику `factory`.
     /// Параметры десериализуются из query string через `FromQueryParams`.
+    /// Запрос проходит через `QueryPipeline` (auth → hooks → handler → audit).
     #[must_use]
     pub fn query<H, F>(mut self, method: &Method, path: &str, factory: F) -> Self
     where
@@ -127,15 +131,17 @@ impl<UF: UnitOfWorkFactory + 'static> BcRouter<UF> {
         F: Fn() -> H + Clone + Send + Sync + 'static,
     {
         let handler = Arc::new((factory)());
+        let qp = self.query_pipeline.clone();
 
         let method_router = routing::on(
             method_to_filter(method),
             move |Extension(ctx): Extension<RequestContext>,
                   Query(params): Query<<H::Query as FromQueryParams>::Params>| {
                 let handler = handler.clone();
+                let qp = qp.clone();
                 async move {
                     let query = <H::Query as FromQueryParams>::from_params(params);
-                    match handler.handle(&query, &ctx).await {
+                    match qp.execute(&*handler, &query, &ctx).await {
                         Ok(result) => {
                             let json = serde_json::to_value(result)
                                 .unwrap_or_else(|_| serde_json::json!("ok"));

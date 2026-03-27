@@ -104,23 +104,21 @@ impl CommandHandler for CreateProductHandler {
         .await
         .internal("create_product")?;
 
-        // 6. Domain history
+        // 6. Domain history (deferred — flush в commit)
         let new_state = serde_json::json!({
             "sku": sku.as_str(),
             "name": product.name().as_str(),
             "category": product.category(),
             "unit": product.unit(),
         });
-        audit::DomainHistoryWriter::record_change(
-            db.client(),
+        db.record_change(
             ctx,
             "product",
             *product_id.as_uuid(),
             "erp.catalog.product_created.v1",
             None::<&serde_json::Value>,
             Some(&new_state),
-        )
-        .await?;
+        )?;
 
         // 7. Emit events to outbox
         db.emit_events(&mut product, ctx, "catalog")?;

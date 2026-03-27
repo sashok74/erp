@@ -10,7 +10,7 @@ use axum::http::Method;
 
 use bc_http::BcRouter;
 use db::PgUnitOfWorkFactory;
-use runtime::CommandPipeline;
+use runtime::{CommandPipeline, QueryPipeline};
 
 use crate::application::commands::receive_goods::ReceiveGoodsHandler;
 use crate::application::queries::get_balance::GetBalanceHandler;
@@ -18,9 +18,10 @@ use crate::application::queries::get_balance::GetBalanceHandler;
 /// Построить axum `Router` для Warehouse BC.
 pub fn routes(
     pipeline: Arc<CommandPipeline<PgUnitOfWorkFactory>>,
+    query_pipeline: Arc<QueryPipeline>,
     pool: Arc<db::PgPool>,
 ) -> Router {
-    BcRouter::new(pipeline)
+    BcRouter::new(pipeline, query_pipeline)
         .command(&Method::POST, "/receive", {
             let pool = pool.clone();
             move || ReceiveGoodsHandler::new(pool.clone())

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bigdecimal::BigDecimal;
 use db::ReadDbContext;
-use kernel::{AppError, IntoInternal, RequestContext};
+use kernel::{AppError, IntoInternal, Query, RequestContext};
 use runtime::query_handler::QueryHandler;
 use serde::Serialize;
 use uuid::Uuid;
@@ -18,6 +18,12 @@ use crate::infrastructure::repos::PgInventoryRepo;
 #[derive(Debug)]
 pub struct GetBalanceQuery {
     pub sku: String,
+}
+
+impl Query for GetBalanceQuery {
+    fn query_name(&self) -> &'static str {
+        "warehouse.get_balance"
+    }
 }
 
 /// Результат запроса баланса.

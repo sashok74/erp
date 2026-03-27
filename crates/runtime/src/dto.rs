@@ -3,7 +3,7 @@
 //! `FromBody` и `FromQueryParams` — serde-only trait'ы без привязки к HTTP.
 //! Используются в delivery-слое (gateway) для типобезопасной десериализации.
 
-use kernel::Command;
+use kernel::{Command, Query};
 use serde::de::DeserializeOwned;
 
 /// Trait для команд, создаваемых из JSON body.
@@ -15,7 +15,7 @@ pub trait FromBody: Command {
 }
 
 /// Trait для запросов, создаваемых из query parameters.
-pub trait FromQueryParams: Send + Sync {
+pub trait FromQueryParams: Query {
     /// Тип query-параметров.
     type Params: DeserializeOwned + Send;
     /// Создать запрос из десериализованных параметров.

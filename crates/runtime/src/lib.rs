@@ -19,6 +19,7 @@ pub mod module;
 pub mod pipeline;
 pub mod ports;
 pub mod query_handler;
+pub mod query_pipeline;
 pub mod stubs;
 
 // Re-exports для удобства: `use runtime::CommandPipeline`
@@ -28,3 +29,4 @@ pub use module::BoundedContextModule;
 pub use pipeline::CommandPipeline;
 pub use ports::{AuditLog, ExtensionHooks, PermissionChecker, UnitOfWork, UnitOfWorkFactory};
 pub use query_handler::QueryHandler;
+pub use query_pipeline::QueryPipeline;

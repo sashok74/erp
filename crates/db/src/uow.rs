@@ -16,9 +16,27 @@ use event_bus::EventEnvelope;
 use kernel::{AppError, RequestContext};
 use runtime::ports::{UnitOfWork, UnitOfWorkFactory};
 use tracing::debug;
+use uuid::Uuid;
 
 use crate::pool::PgPool;
 use crate::rls::set_tenant_context;
+
+/// Pending domain history entry — deferred до `commit()`.
+///
+/// Handler вызывает `PgCommandContext::record_change()` → entry попадает сюда.
+/// `PgUnitOfWork::commit()` flush'ит все entries в `common.domain_history`.
+pub(crate) struct PendingHistoryEntry {
+    pub tenant_id: Uuid,
+    pub entity_type: String,
+    pub entity_id: Uuid,
+    pub event_type: String,
+    pub old_state: serde_json::Value,
+    pub new_state: serde_json::Value,
+    pub correlation_id: Uuid,
+    pub causation_id: Uuid,
+    pub user_id: Uuid,
+    pub created_at: chrono::DateTime<chrono::FixedOffset>,
+}
 
 /// Фабрика `PgUnitOfWork`.
 ///
@@ -67,6 +85,7 @@ impl UnitOfWorkFactory for PgUnitOfWorkFactory {
         Ok(PgUnitOfWork {
             client,
             outbox_entries: Vec::new(),
+            history_entries: Vec::new(),
         })
     }
 }
@@ -80,6 +99,8 @@ pub struct PgUnitOfWork {
     client: deadpool_postgres::Object,
     /// Outbox-записи, накопленные handler'ом.
     outbox_entries: Vec<EventEnvelope>,
+    /// Domain history entries, накопленные handler'ом (deferred flush в commit).
+    history_entries: Vec<PendingHistoryEntry>,
 }
 
 impl PgUnitOfWork {
@@ -103,6 +124,35 @@ impl PgUnitOfWork {
     /// Добавить outbox-запись напрямую (для `PgCommandContext`).
     pub(crate) fn push_outbox_entry(&mut self, envelope: EventEnvelope) {
         self.outbox_entries.push(envelope);
+    }
+
+    /// Добавить domain history entry (для `PgCommandContext::record_change`).
+    pub(crate) fn push_history_entry(&mut self, entry: PendingHistoryEntry) {
+        self.history_entries.push(entry);
+    }
+
+    /// INSERT всех history entries в `common.domain_history` (внутри текущей TX).
+    async fn flush_history(&self) -> Result<(), AppError> {
+        for entry in &self.history_entries {
+            clorinde_gen::queries::common::domain_history::insert_domain_history()
+                .bind(
+                    &self.client,
+                    &entry.tenant_id,
+                    &entry.entity_type,
+                    &entry.entity_id,
+                    &entry.event_type,
+                    &entry.old_state,
+                    &entry.new_state,
+                    &entry.correlation_id,
+                    &entry.causation_id,
+                    &entry.user_id,
+                    &entry.created_at,
+                )
+                .one()
+                .await
+                .map_err(|e| AppError::Internal(format!("domain_history INSERT failed: {e}")))?;
+        }
+        Ok(())
     }
 
     /// INSERT всех outbox entries в `common.outbox` (внутри текущей TX).
@@ -139,7 +189,8 @@ impl UnitOfWork for PgUnitOfWork {
     }
 
     async fn commit(self: Box<Self>) -> Result<(), AppError> {
-        // Сначала записываем outbox — в той же транзакции.
+        // Сначала domain history, затем outbox — в той же транзакции.
+        self.flush_history().await?;
         self.flush_outbox().await?;
 
         self.client
@@ -148,8 +199,9 @@ impl UnitOfWork for PgUnitOfWork {
             .map_err(|e| AppError::Internal(format!("COMMIT failed: {e}")))?;
 
         debug!(
+            history_count = self.history_entries.len(),
             outbox_count = self.outbox_entries.len(),
-            "UoW committed with outbox entries"
+            "UoW committed with history + outbox entries"
         );
         Ok(())
     }

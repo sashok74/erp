@@ -13,6 +13,7 @@ pub mod entity;
 pub mod error_ext;
 pub mod errors;
 pub mod events;
+pub mod queries;
 pub mod types;
 
 // Re-exports для удобства: `use kernel::TenantId` вместо `use kernel::types::TenantId`
@@ -21,4 +22,5 @@ pub use entity::{AggregateRoot, Entity};
 pub use error_ext::IntoInternal;
 pub use errors::{AppError, DomainError};
 pub use events::{CloudEvent, DomainEvent};
+pub use queries::Query;
 pub use types::{EntityId, RequestContext, TenantId, UserId};

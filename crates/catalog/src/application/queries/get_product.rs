@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use db::ReadDbContext;
-use kernel::{AppError, DomainError, IntoInternal, RequestContext};
+use kernel::{AppError, DomainError, IntoInternal, Query, RequestContext};
 use runtime::query_handler::QueryHandler;
 use serde::Serialize;
 use uuid::Uuid;
@@ -17,6 +17,12 @@ use crate::infrastructure::repos::PgProductRepo;
 #[derive(Debug)]
 pub struct GetProductQuery {
     pub sku: String,
+}
+
+impl Query for GetProductQuery {
+    fn query_name(&self) -> &'static str {
+        "catalog.get_product"
+    }
 }
 
 /// Результат запроса товара.

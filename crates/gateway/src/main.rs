@@ -32,9 +32,7 @@ async fn main() {
     info!(addr = %config.listen_addr, "starting ERP Gateway");
 
     // 3. Database pool
-    let pool = Arc::new(
-        db::PgPool::new(&config.database_url).expect("PgPool creation failed"),
-    );
+    let pool = Arc::new(db::PgPool::new(&config.database_url).expect("PgPool creation failed"));
     pool.health_check().await.expect("DB health check failed");
     info!("database connection OK");
 
@@ -50,22 +48,28 @@ async fn main() {
     let extensions = Arc::new(runtime::stubs::NoopExtensionHooks);
     let uow_factory = Arc::new(db::PgUnitOfWorkFactory::new(pool.clone()));
 
-    // 5. Command Pipeline
+    // 5. Command Pipeline + Query Pipeline
     let pipeline = Arc::new(runtime::CommandPipeline::new(
         uow_factory,
         bus.clone(),
-        checker,
-        extensions,
-        audit_log,
+        checker.clone(),
+        extensions.clone(),
+        audit_log.clone(),
     ));
+
+    let query_pipeline = Arc::new(runtime::QueryPipeline::new(checker, extensions, audit_log));
 
     // 6. Register Bounded Contexts (migrations + handlers + routes)
     let wh = warehouse::module::WarehouseModule::new(pool.clone());
     let cat = catalog::module::CatalogModule;
 
-    let mut builder = AppBuilder::new(pool.clone(), bus.clone(), pipeline).await;
-    builder.register(&wh, warehouse::infrastructure::http::routes).await;
-    builder.register(&cat, catalog::infrastructure::http::routes).await;
+    let mut builder = AppBuilder::new(pool.clone(), bus.clone(), pipeline, query_pipeline).await;
+    builder
+        .register(&wh, warehouse::infrastructure::http::routes)
+        .await;
+    builder
+        .register(&cat, catalog::infrastructure::http::routes)
+        .await;
 
     // 7. Outbox Relay (background task)
     let relay = db::OutboxRelay::new(

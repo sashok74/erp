@@ -4,7 +4,7 @@
 //! Может маршрутизироваться на read-реплику, кэшироваться.
 
 use async_trait::async_trait;
-use kernel::{AppError, RequestContext};
+use kernel::{AppError, Query, RequestContext};
 use serde::Serialize;
 
 /// Обработчик запроса. Read-only операция.
@@ -13,8 +13,8 @@ use serde::Serialize;
 /// запросы не участвуют в транзакциях.
 #[async_trait]
 pub trait QueryHandler: Send + Sync + 'static {
-    /// Тип запроса.
-    type Query: Send + Sync;
+    /// Тип запроса. Должен реализовать [`Query`] для identity key.
+    type Query: Query;
 
     /// Результат запроса.
     type Result: Serialize + Send;
@@ -39,6 +39,12 @@ mod tests {
     // ─── Test fixtures ───────────────────────────────────────────────────
 
     struct PingQuery;
+
+    impl Query for PingQuery {
+        fn query_name(&self) -> &'static str {
+            "test.ping"
+        }
+    }
 
     #[derive(Debug, Serialize, PartialEq)]
     struct PongResult {

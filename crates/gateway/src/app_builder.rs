@@ -18,6 +18,7 @@ pub struct AppBuilder {
     pool: Arc<db::PgPool>,
     bus: Arc<event_bus::InProcessBus>,
     pipeline: Arc<runtime::CommandPipeline<db::PgUnitOfWorkFactory>>,
+    query_pipeline: Arc<runtime::QueryPipeline>,
     api: Router,
 }
 
@@ -27,6 +28,7 @@ impl AppBuilder {
         pool: Arc<db::PgPool>,
         bus: Arc<event_bus::InProcessBus>,
         pipeline: Arc<runtime::CommandPipeline<db::PgUnitOfWorkFactory>>,
+        query_pipeline: Arc<runtime::QueryPipeline>,
     ) -> Self {
         db::migrate::run_migrations(&pool, "migrations/common")
             .await
@@ -36,6 +38,7 @@ impl AppBuilder {
             pool,
             bus,
             pipeline,
+            query_pipeline,
             api: Router::new(),
         }
     }
@@ -48,6 +51,7 @@ impl AppBuilder {
         module: &dyn BoundedContextModule,
         routes_fn: impl FnOnce(
             Arc<runtime::CommandPipeline<db::PgUnitOfWorkFactory>>,
+            Arc<runtime::QueryPipeline>,
             Arc<db::PgPool>,
         ) -> Router,
     ) -> &mut Self {
@@ -64,7 +68,11 @@ impl AppBuilder {
         info!(bc = name, "event handlers registered");
 
         // 3. Routes
-        let routes = routes_fn(self.pipeline.clone(), self.pool.clone());
+        let routes = routes_fn(
+            self.pipeline.clone(),
+            self.query_pipeline.clone(),
+            self.pool.clone(),
+        );
         self.api = std::mem::take(&mut self.api).nest(&format!("/{name}"), routes);
 
         self
