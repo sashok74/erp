@@ -6,7 +6,8 @@
 use anyhow::Result;
 use bigdecimal::BigDecimal;
 use clorinde_gen::client::GenericClient;
-use db::conversions::{dec_str, parse_dec, tid};
+use db::conversions::{parse_dec, tid};
+use db::transport::DecStr;
 use db::{repo_exec, repo_opt};
 use kernel::types::TenantId;
 use uuid::Uuid;
@@ -81,7 +82,7 @@ impl PgInventoryRepo {
         ) via clorinde_gen::queries::warehouse::inventory::insert_movement;
         bind = [
             &tid(tenant_id), &movement_id, &item_id, &event_type,
-            &dec_str(qty), &dec_str(balance_after), &doc_number,
+            &DecStr(qty), &DecStr(balance_after), &doc_number,
             &correlation_id, &user_id
         ];
     }
@@ -96,7 +97,7 @@ impl PgInventoryRepo {
             balance: &BigDecimal,
             movement_id: Uuid,
         ) via clorinde_gen::queries::warehouse::balances::upsert_balance;
-        bind = [&tid(tenant_id), &item_id, &sku, &dec_str(balance), &movement_id];
+        bind = [&tid(tenant_id), &item_id, &sku, &DecStr(balance), &movement_id];
     }
 
     repo_opt! {

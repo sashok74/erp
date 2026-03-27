@@ -192,6 +192,39 @@ impl FindItemBySkuStmt {
 
 **Важно:** `TIMESTAMPTZ` маппится в `DateTime<FixedOffset>`, не `DateTime<Utc>`. При передаче из `RequestContext` (который хранит `DateTime<Utc>`) нужна конвертация: `timestamp.fixed_offset()`.
 
+### Transport Adapters (`db::transport`)
+
+Для типов, которые Clorinde передаёт как TEXT (например `NUMERIC` через `::TEXT::NUMERIC` cast),
+crate `db` предоставляет **transport adapters** — zero-copy wrappers, реализующие clorinde marker traits.
+
+#### Write path: `DecStr`
+
+```rust
+use db::transport::DecStr;
+
+// В bind-списках — без ручной конвертации в строку:
+bind = [&tid(tenant_id), &item_id, &DecStr(balance)];
+```
+
+`DecStr<'a>` оборачивает `&'a BigDecimal` и реализует `StringSql` (через `ToSql` как TEXT).
+Clorinde принимает его везде, где ожидается `StringSql` параметр.
+
+#### Read path: `parse_dec`
+
+```rust
+use db::conversions::parse_dec;
+
+// В map-блоках — парсинг TEXT обратно в BigDecimal:
+map = |r| { BalanceRow { balance: parse_dec(&r.balance)? } };
+```
+
+#### Как добавить новый transport adapter
+
+1. Определить wrapper в `db::transport`, например `MoneyStr<'a>(&'a Money)`
+2. Реализовать `postgres_types::ToSql` (сериализация в TEXT через `Display` или кастомную логику)
+3. Реализовать `clorinde_gen::StringSql` (marker trait, без методов)
+4. Использовать `MoneyStr(&amount)` в bind-списках
+
 ---
 
 ## Как используется в коде
@@ -247,15 +280,15 @@ impl PgInventoryRepo {
         client: &impl GenericClient,
         tenant_id: TenantId,
         movement_id: Uuid,
+        qty: &BigDecimal,
+        balance_after: &BigDecimal,
         /* ... */
     ) -> Result<()> {
         let tid = *tenant_id.as_uuid();
-        let qty_str = qty.to_string();  // BigDecimal → String для TEXT::NUMERIC cast
-        let bal_str = balance_after.to_string();
-
+        // DecStr — transport adapter, реализует StringSql напрямую
         clorinde_gen::queries::warehouse::inventory::insert_movement()
             .bind(client, &tid, &movement_id, &item_id,
-                  &event_type, &qty_str, &bal_str, &doc_number,
+                  &event_type, &DecStr(qty), &DecStr(balance_after), &doc_number,
                   &correlation_id, &user_id)
             .await?;
         Ok(())

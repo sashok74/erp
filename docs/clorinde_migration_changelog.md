@@ -1,4 +1,6 @@
 # Изменения в существующих ТЗ: sqlx → Clorinde
+> **Исторический документ.** Миграция sqlx → Clorinde завершена. Актуальный гайд: `clorinde_integration_guide.md`.
+>
 > Применить при выполнении Layer 0 и Layer 1
 
 ---

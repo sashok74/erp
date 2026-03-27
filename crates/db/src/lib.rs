@@ -15,7 +15,10 @@ pub mod pool;
 pub mod relay;
 pub mod repo_macros;
 pub mod rls;
+pub mod transport;
 pub mod uow;
+
+pub use transport::DecStr;
 
 pub use context::{PgCommandContext, ReadDbContext};
 pub use inbox::InboxGuard;

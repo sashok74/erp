@@ -33,6 +33,9 @@ pub fn eid(e: EntityId) -> Uuid {
 }
 
 /// `&BigDecimal` → `String` для `.bind()` в clorinde (`PostgreSQL` TEXT column).
+///
+/// **Prefer [`crate::transport::DecStr`]** — zero-copy wrapper that implements
+/// `StringSql` directly, eliminating manual string conversion in repo code.
 #[inline]
 #[must_use]
 pub fn dec_str(d: &BigDecimal) -> String {

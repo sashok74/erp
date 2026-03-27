@@ -4,8 +4,8 @@
 //! - [`repo_exec!`] — write-запрос без результата (`INSERT`/`UPDATE`/`DELETE`)
 //! - [`repo_opt!`] — read-запрос с `Option<T>` результатом (`SELECT ... LIMIT 1`)
 //!
-//! Конверсии типов — через [`crate::conversions`] helpers:
-//! `tid()`, `uid()`, `dec_str()`, `parse_dec()`.
+//! Конверсии типов — через [`crate::conversions`] helpers (`tid()`, `uid()`, `parse_dec()`)
+//! и [`crate::transport`] adapters ([`crate::transport::DecStr`] для decimal bind).
 
 /// Генерирует exec-метод репозитория: `.bind(...).await?; Ok(())`.
 ///
