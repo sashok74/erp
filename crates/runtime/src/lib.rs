@@ -14,6 +14,7 @@
 
 pub mod command_handler;
 pub mod dto;
+pub mod dto_macros;
 pub mod module;
 pub mod pipeline;
 pub mod ports;

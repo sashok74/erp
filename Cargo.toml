@@ -9,6 +9,7 @@ members = [
     "crates/audit",
     "crates/seq_gen",
     "crates/runtime",
+    "crates/bc_http",
     "crates/extensions",
     "crates/warehouse",
     "crates/catalog",
@@ -91,5 +92,6 @@ audit = { path = "crates/audit" }
 seq_gen = { path = "crates/seq_gen" }
 runtime = { path = "crates/runtime" }
 extensions = { path = "crates/extensions" }
+bc_http = { path = "crates/bc_http" }
 warehouse = { path = "crates/warehouse" }
 catalog = { path = "crates/catalog" }

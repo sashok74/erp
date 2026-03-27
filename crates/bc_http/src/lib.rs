@@ -1,7 +1,10 @@
-//! `BcRouter` — типобезопасный маршрутизатор для Bounded Context.
+#![warn(clippy::pedantic)]
+#![allow(clippy::module_name_repetitions)]
+
+//! `bc_http` — HTTP DSL для Bounded Contexts.
 //!
-//! HTTP-адаптер: десериализация, вызов pipeline/query, маппинг ошибок.
-//! BC-разработчик описывает маршруты декларативно через closure-фабрики:
+//! Типобезопасный маршрутизатор [`BcRouter`]: десериализация, вызов pipeline/query,
+//! маппинг ошибок. BC описывает маршруты декларативно через closure-фабрики:
 //!
 //! ```ignore
 //! BcRouter::new(pipeline)

@@ -1,31 +1,24 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
-//! ERP Gateway — HTTP-сервер, собирающий все Bounded Contexts.
+//! ERP Gateway — composition root, собирающий все Bounded Contexts.
 //!
 //! Единственный binary в системе. Запуск: `cargo run -p gateway`.
+//! Gateway не знает про конкретные handler'ы BC — только монтирует
+//! модульные entrypoint'ы (`routes()`, `register_handlers()`).
 
-mod bc_router;
 mod config;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
-use axum::http::{Method, StatusCode};
 use axum::response::IntoResponse;
 use axum::{Json, Router, routing};
 use serde::Deserialize;
-use event_bus::EventBus;
 use tracing::info;
 
-use bc_router::BcRouter;
 use config::AppConfig;
-
-use catalog::application::commands::create_product::CreateProductHandler;
-use catalog::application::queries::get_product::GetProductHandler;
-use warehouse::application::commands::receive_goods::ReceiveGoodsHandler;
-use warehouse::application::queries::get_balance::GetBalanceHandler;
 
 #[tokio::main]
 async fn main() {
@@ -75,14 +68,10 @@ async fn main() {
         audit_log,
     ));
 
-    // 6a. Register event handlers
-    let product_handler =
-        warehouse::infrastructure::event_handlers::ProductCreatedHandler::new(pool.clone());
-    let adapter = Arc::new(event_bus::EventHandlerAdapter::new(product_handler));
-    bus.subscribe("erp.catalog.product_created.v1", adapter)
-        .await;
+    // 7. Register BC event handlers
+    warehouse::module::WarehouseModule::register_handlers(&*bus, pool.clone()).await;
 
-    // 7. Outbox Relay (background task)
+    // 8. Outbox Relay (background task)
     let relay = db::OutboxRelay::new(
         pool.clone(),
         bus,
@@ -93,10 +82,10 @@ async fn main() {
         relay.run().await.ok();
     });
 
-    // 8. Router
+    // 9. Router
     let app = build_router(pipeline, &pool, jwt_service);
 
-    // 9. Serve
+    // 10. Serve
     let listener = tokio::net::TcpListener::bind(&config.listen_addr)
         .await
         .expect("bind failed");
@@ -110,29 +99,9 @@ fn build_router(
     pool: &Arc<db::PgPool>,
     jwt_service: Arc<auth::JwtService>,
 ) -> Router {
-    // Warehouse BC routes
-    let warehouse = BcRouter::new(pipeline.clone())
-        .command(&Method::POST, "/receive", {
-            let pool = pool.clone();
-            move || ReceiveGoodsHandler::new(pool.clone())
-        })
-        .query(&Method::GET, "/balance", {
-            let pool = pool.clone();
-            move || GetBalanceHandler::new(pool.clone())
-        })
-        .build();
-
-    // Catalog BC routes
-    let catalog = BcRouter::new(pipeline)
-        .command_with_status(&Method::POST, "/products", StatusCode::CREATED, {
-            let pool = pool.clone();
-            move || CreateProductHandler::new(pool.clone())
-        })
-        .query(&Method::GET, "/products", {
-            let pool = pool.clone();
-            move || GetProductHandler::new(pool.clone())
-        })
-        .build();
+    // BC routes — каждый BC сам описывает свои маршруты
+    let warehouse = warehouse::infrastructure::http::routes(pipeline.clone(), pool.clone());
+    let catalog = catalog::infrastructure::http::routes(pipeline, pool.clone());
 
     // API routes — все BC под /api/{bc_name}, protected by JWT
     let jwt_for_middleware = jwt_service.clone();

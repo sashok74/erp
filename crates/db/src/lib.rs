@@ -8,10 +8,12 @@
 //! `clorinde-gen` crate содержит типобезопасные SQL-запросы.
 
 pub mod context;
+pub mod conversions;
 pub mod inbox;
 pub mod migrate;
 pub mod pool;
 pub mod relay;
+pub mod repo_macros;
 pub mod rls;
 pub mod uow;
 

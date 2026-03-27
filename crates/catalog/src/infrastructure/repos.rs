@@ -1,7 +1,7 @@
 //! `PgProductRepo` — SQL-доступ к каталогу товаров через `clorinde_gen`.
 
-use anyhow::Result;
-use clorinde_gen::client::GenericClient;
+use db::conversions::tid;
+use db::{repo_exec, repo_opt};
 use kernel::types::TenantId;
 use uuid::Uuid;
 
@@ -19,49 +19,37 @@ pub struct ProductRow {
 pub struct PgProductRepo;
 
 impl PgProductRepo {
-    /// Найти товар по SKU.
-    ///
-    /// # Errors
-    ///
-    /// Возвращает ошибку при сбое SQL-запроса.
-    pub async fn find_by_sku(
-        client: &impl GenericClient,
-        tenant_id: TenantId,
-        sku: &str,
-    ) -> Result<Option<ProductRow>> {
-        let tid = *tenant_id.as_uuid();
-        let row = clorinde_gen::queries::catalog::products::find_by_sku()
-            .bind(client, &tid, &sku)
-            .opt()
-            .await?;
-
-        Ok(row.map(|r| ProductRow {
-            id: r.id,
-            sku: r.sku,
-            name: r.name,
-            category: r.category,
-            unit: r.unit,
-        }))
+    repo_opt! {
+        /// Найти товар по SKU.
+        pub async fn find_by_sku(
+            client: &impl GenericClient,
+            tenant_id: TenantId,
+            sku: &str,
+        ) -> Option<ProductRow>
+        via clorinde_gen::queries::catalog::products::find_by_sku;
+        bind = [&tid(tenant_id), &sku];
+        map = |r| {
+            ProductRow {
+                id: r.id,
+                sku: r.sku,
+                name: r.name,
+                category: r.category,
+                unit: r.unit,
+            }
+        };
     }
 
-    /// Создать товар в каталоге.
-    ///
-    /// # Errors
-    ///
-    /// Возвращает ошибку при сбое SQL-запроса.
-    pub async fn create_product(
-        client: &impl GenericClient,
-        tenant_id: TenantId,
-        id: Uuid,
-        sku: &str,
-        name: &str,
-        category: &str,
-        unit: &str,
-    ) -> Result<()> {
-        let tid = *tenant_id.as_uuid();
-        clorinde_gen::queries::catalog::products::create_product()
-            .bind(client, &tid, &id, &sku, &name, &category, &unit)
-            .await?;
-        Ok(())
+    repo_exec! {
+        /// Создать товар в каталоге.
+        pub async fn create_product(
+            client: &impl GenericClient,
+            tenant_id: TenantId,
+            id: Uuid,
+            sku: &str,
+            name: &str,
+            category: &str,
+            unit: &str,
+        ) via clorinde_gen::queries::catalog::products::create_product;
+        bind = [&tid(tenant_id), &id, &sku, &name, &category, &unit];
     }
 }

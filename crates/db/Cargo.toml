@@ -22,6 +22,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
+bigdecimal = { workspace = true }
 
 [dev-dependencies]
 serde = { workspace = true }

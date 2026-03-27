@@ -10,6 +10,7 @@ publish = false
 kernel = { workspace = true }
 runtime = { workspace = true }
 event_bus = { workspace = true }
+bc_http = { workspace = true }
 db = { workspace = true }
 clorinde-gen = { workspace = true }
 audit = { workspace = true }
@@ -21,6 +22,7 @@ thiserror = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
+axum = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
