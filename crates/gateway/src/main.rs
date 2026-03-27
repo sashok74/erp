@@ -5,8 +5,9 @@
 //!
 //! Единственный binary в системе. Запуск: `cargo run -p gateway`.
 //! Gateway не знает про конкретные handler'ы BC — только монтирует
-//! модульные entrypoint'ы (`routes()`, `register_handlers()`).
+//! модульные entrypoint'ы через [`AppBuilder`](app_builder::AppBuilder).
 
+mod app_builder;
 mod config;
 
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use axum::{Json, Router, routing};
 use serde::Deserialize;
 use tracing::info;
 
+use app_builder::AppBuilder;
 use config::AppConfig;
 
 #[tokio::main]
@@ -36,18 +38,7 @@ async fn main() {
     pool.health_check().await.expect("DB health check failed");
     info!("database connection OK");
 
-    // 4. Migrations (idempotent)
-    db::migrate::run_migrations(&pool, "migrations/common")
-        .await
-        .expect("common migrations failed");
-    db::migrate::run_migrations(&pool, "migrations/warehouse")
-        .await
-        .expect("warehouse migrations failed");
-    db::migrate::run_migrations(&pool, "migrations/catalog")
-        .await
-        .expect("catalog migrations failed");
-
-    // 5. Infrastructure services
+    // 4. Infrastructure services
     let bus = Arc::new(event_bus::InProcessBus::new());
     let jwt_service = Arc::new(auth::JwtService::new(
         &config.jwt_secret,
@@ -59,7 +50,7 @@ async fn main() {
     let extensions = Arc::new(runtime::stubs::NoopExtensionHooks);
     let uow_factory = Arc::new(db::PgUnitOfWorkFactory::new(pool.clone()));
 
-    // 6. Command Pipeline
+    // 5. Command Pipeline
     let pipeline = Arc::new(runtime::CommandPipeline::new(
         uow_factory,
         bus.clone(),
@@ -68,12 +59,17 @@ async fn main() {
         audit_log,
     ));
 
-    // 7. Register BC event handlers
-    warehouse::module::WarehouseModule::register_handlers(&*bus, pool.clone()).await;
+    // 6. Register Bounded Contexts (migrations + handlers + routes)
+    let wh = warehouse::module::WarehouseModule::new(pool.clone());
+    let cat = catalog::module::CatalogModule;
 
-    // 8. Outbox Relay (background task)
+    let mut builder = AppBuilder::new(pool.clone(), bus.clone(), pipeline).await;
+    builder.register(&wh, warehouse::infrastructure::http::routes).await;
+    builder.register(&cat, catalog::infrastructure::http::routes).await;
+
+    // 7. Outbox Relay (background task)
     let relay = db::OutboxRelay::new(
-        pool.clone(),
+        pool,
         bus,
         Duration::from_millis(config.relay_poll_ms),
         config.relay_batch_size,
@@ -82,10 +78,10 @@ async fn main() {
         relay.run().await.ok();
     });
 
-    // 9. Router
-    let app = build_router(pipeline, &pool, jwt_service);
+    // 8. Router
+    let app = build_router(builder.into_api(), jwt_service);
 
-    // 10. Serve
+    // 9. Serve
     let listener = tokio::net::TcpListener::bind(&config.listen_addr)
         .await
         .expect("bind failed");
@@ -93,25 +89,14 @@ async fn main() {
     axum::serve(listener, app).await.expect("server error");
 }
 
-/// Собрать Router: /health + /api/{bc} с auth middleware + опционально /dev/token.
-fn build_router(
-    pipeline: Arc<runtime::CommandPipeline<db::PgUnitOfWorkFactory>>,
-    pool: &Arc<db::PgPool>,
-    jwt_service: Arc<auth::JwtService>,
-) -> Router {
-    // BC routes — каждый BC сам описывает свои маршруты
-    let warehouse = warehouse::infrastructure::http::routes(pipeline.clone(), pool.clone());
-    let catalog = catalog::infrastructure::http::routes(pipeline, pool.clone());
-
+/// Собрать Router: /health + /api с auth middleware + опционально /dev/token.
+fn build_router(api: Router, jwt_service: Arc<auth::JwtService>) -> Router {
     // API routes — все BC под /api/{bc_name}, protected by JWT
     let jwt_for_middleware = jwt_service.clone();
-    let api = Router::new()
-        .nest("/warehouse", warehouse)
-        .nest("/catalog", catalog)
-        .layer(axum::middleware::from_fn(move |req, next| {
-            let svc = jwt_for_middleware.clone();
-            async move { auth::auth_middleware(req, next, svc).await }
-        }));
+    let api = api.layer(axum::middleware::from_fn(move |req, next| {
+        let svc = jwt_for_middleware.clone();
+        async move { auth::auth_middleware(req, next, svc).await }
+    }));
 
     // Root router
     let mut root = Router::new()

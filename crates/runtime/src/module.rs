@@ -1,6 +1,7 @@
 //! Контракт Bounded Context модуля.
 //!
-//! Каждый BC регистрируется как модуль: подписывает event handler'ы на шину.
+//! Каждый BC регистрируется как модуль: предоставляет метаданные,
+//! подписывает event handler'ы на шину, указывает путь к миграциям.
 //! HTTP-маршруты строятся в gateway (delivery-слой), а не в runtime.
 
 use async_trait::async_trait;
@@ -9,11 +10,15 @@ use event_bus::traits::EventBus;
 /// Модуль Bounded Context — точка регистрации BC в системе.
 ///
 /// Каждый BC (Warehouse, Finance, ...) реализует этот trait.
-/// HTTP-маршрутизация — ответственность gateway (`BcRouter`).
+/// Зависимости (pool, etc.) хранятся в struct, а не передаются в методы.
+/// HTTP-маршрутизация — ответственность gateway (`AppBuilder`).
 #[async_trait]
 pub trait BoundedContextModule: Send + Sync + 'static {
-    /// Имя BC: `"warehouse"`, `"finance"`, `"audit"`.
+    /// Имя BC: `"warehouse"`, `"finance"`, `"catalog"`.
     fn name(&self) -> &'static str;
+
+    /// Путь к директории миграций: `"migrations/warehouse"`.
+    fn migrations_dir(&self) -> &'static str;
 
     /// Зарегистрировать event handler'ы на шине.
     /// Вызывается при старте приложения.
@@ -24,7 +29,6 @@ pub trait BoundedContextModule: Send + Sync + 'static {
 mod tests {
     use super::*;
 
-    // Object safety: Box<dyn BoundedContextModule> должен компилироваться
     fn _assert_object_safe(_: Box<dyn BoundedContextModule>) {}
 
     fn _assert_send_sync<T: Send + Sync + 'static>() {}
