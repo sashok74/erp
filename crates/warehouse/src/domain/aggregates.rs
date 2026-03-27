@@ -137,10 +137,16 @@ mod tests {
     #[test]
     fn receive_cumulative() {
         let mut item = make_item();
-        item.receive(&Quantity::new(BigDecimal::from(100)).unwrap(), "ПРХ-1".into())
-            .unwrap();
-        item.receive(&Quantity::new(BigDecimal::from(50)).unwrap(), "ПРХ-2".into())
-            .unwrap();
+        item.receive(
+            &Quantity::new(BigDecimal::from(100)).unwrap(),
+            "ПРХ-1".into(),
+        )
+        .unwrap();
+        item.receive(
+            &Quantity::new(BigDecimal::from(50)).unwrap(),
+            "ПРХ-2".into(),
+        )
+        .unwrap();
 
         assert_eq!(item.balance().value(), &BigDecimal::from(150));
     }
@@ -167,10 +173,16 @@ mod tests {
     #[test]
     fn take_events_returns_and_clears() {
         let mut item = make_item();
-        item.receive(&Quantity::new(BigDecimal::from(100)).unwrap(), "ПРХ-1".into())
-            .unwrap();
-        item.receive(&Quantity::new(BigDecimal::from(50)).unwrap(), "ПРХ-2".into())
-            .unwrap();
+        item.receive(
+            &Quantity::new(BigDecimal::from(100)).unwrap(),
+            "ПРХ-1".into(),
+        )
+        .unwrap();
+        item.receive(
+            &Quantity::new(BigDecimal::from(50)).unwrap(),
+            "ПРХ-2".into(),
+        )
+        .unwrap();
 
         let events = item.take_events();
         assert_eq!(events.len(), 2);

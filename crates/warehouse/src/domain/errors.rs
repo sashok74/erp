@@ -26,9 +26,9 @@ pub enum WarehouseDomainError {
 impl From<WarehouseDomainError> for AppError {
     fn from(e: WarehouseDomainError) -> Self {
         match e {
-            WarehouseDomainError::InvalidSku(_) | WarehouseDomainError::NegativeQuantity | WarehouseDomainError::ZeroQuantity => {
-                AppError::Validation(e.to_string())
-            }
+            WarehouseDomainError::InvalidSku(_)
+            | WarehouseDomainError::NegativeQuantity
+            | WarehouseDomainError::ZeroQuantity => AppError::Validation(e.to_string()),
             WarehouseDomainError::InsufficientStock {
                 ref required,
                 ref available,
@@ -57,6 +57,9 @@ mod tests {
             available: "3".into(),
         }
         .into();
-        assert!(matches!(err, AppError::Domain(DomainError::InsufficientStock { .. })));
+        assert!(matches!(
+            err,
+            AppError::Domain(DomainError::InsufficientStock { .. })
+        ));
     }
 }

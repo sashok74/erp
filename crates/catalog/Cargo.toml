@@ -29,3 +29,4 @@ tokio = { workspace = true }
 auth = { workspace = true }
 warehouse = { workspace = true }
 bigdecimal = { workspace = true }
+test_support = { workspace = true }

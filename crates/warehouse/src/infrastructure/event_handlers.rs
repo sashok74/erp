@@ -6,8 +6,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use kernel::types::TenantId;
 use kernel::DomainEvent;
+use kernel::types::TenantId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

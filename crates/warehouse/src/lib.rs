@@ -7,7 +7,7 @@
 //! - Application: `ReceiveGoodsCommand` + handler, `GetBalanceQuery` + handler
 //! - Infrastructure: `PgInventoryRepo`, axum routes, `WarehouseModule`
 
-pub mod domain;
 pub mod application;
+pub mod domain;
 pub mod infrastructure;
 pub mod module;

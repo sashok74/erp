@@ -3,12 +3,13 @@
 //! Устраняет линейный рост `main.rs`: каждый BC = один вызов `register()`.
 //! `AppBuilder` выполняет для каждого BC:
 //! 1. Миграции (idempotent)
-//! 2. Регистрация event handler'ов на шине
+//! 2. Регистрация event handler'ов на шине (через `InboxBusDecorator`)
 //! 3. Монтирование HTTP-маршрутов под `/api/{bc_name}`
 
 use std::sync::Arc;
 
 use axum::Router;
+use event_bus::traits::EventBus;
 use tracing::info;
 
 use runtime::BoundedContextModule;
@@ -16,7 +17,7 @@ use runtime::BoundedContextModule;
 /// Builder для сборки API-роутера из Bounded Context модулей.
 pub struct AppBuilder {
     pool: Arc<db::PgPool>,
-    bus: Arc<event_bus::InProcessBus>,
+    inbox_bus: Arc<db::InboxBusDecorator>,
     pipeline: Arc<runtime::CommandPipeline<db::PgUnitOfWorkFactory>>,
     query_pipeline: Arc<runtime::QueryPipeline>,
     api: Router,
@@ -24,6 +25,7 @@ pub struct AppBuilder {
 
 impl AppBuilder {
     /// Создать builder. Common-миграции запускаются сразу.
+    /// Bus оборачивается в `InboxBusDecorator` — enforced consumer dedup.
     pub async fn new(
         pool: Arc<db::PgPool>,
         bus: Arc<event_bus::InProcessBus>,
@@ -34,9 +36,13 @@ impl AppBuilder {
             .await
             .expect("common migrations failed");
 
+        let inbox_bus = Arc::new(
+            db::InboxBusDecorator::new(bus as Arc<dyn EventBus>, pool.clone()),
+        );
+
         Self {
             pool,
-            bus,
+            inbox_bus,
             pipeline,
             query_pipeline,
             api: Router::new(),
@@ -63,8 +69,8 @@ impl AppBuilder {
             .unwrap_or_else(|e| panic!("{name} migrations failed: {e}"));
         info!(bc = name, "migrations applied");
 
-        // 2. Event handlers
-        module.register_handlers(&*self.bus).await;
+        // 2. Event handlers — BC получает декорированный bus, НЕ ЗНАЕТ про inbox
+        module.register_handlers(&*self.inbox_bus).await;
         info!(bc = name, "event handlers registered");
 
         // 3. Routes
@@ -76,6 +82,11 @@ impl AppBuilder {
         self.api = std::mem::take(&mut self.api).nest(&format!("/{name}"), routes);
 
         self
+    }
+
+    /// Доступ к декоратору — для `/dev/events` и relay wiring.
+    pub fn inbox_bus(&self) -> &Arc<db::InboxBusDecorator> {
+        &self.inbox_bus
     }
 
     /// Финализировать: вернуть собранный API-роутер.

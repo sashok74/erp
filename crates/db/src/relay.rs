@@ -104,7 +104,7 @@ impl OutboxRelay {
                 payload: row.payload.clone(),
             };
 
-            match self.bus.publish(envelope).await {
+            match self.bus.publish_and_wait(envelope).await {
                 Ok(()) => {
                     clorinde_gen::queries::common::outbox::mark_published()
                         .bind(&client, &row.id)

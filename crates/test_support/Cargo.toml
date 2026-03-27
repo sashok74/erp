@@ -1,0 +1,17 @@
+[package]
+name = "test_support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+tokio = { workspace = true }
+db = { workspace = true }
+kernel = { workspace = true }
+runtime = { workspace = true }
+event_bus = { workspace = true }
+auth = { workspace = true }
+audit = { workspace = true }
+

@@ -7,75 +7,34 @@ use std::sync::Arc;
 use kernel::types::{RequestContext, TenantId, UserId};
 use runtime::pipeline::CommandPipeline;
 use runtime::stubs::NoopExtensionHooks;
+use test_support::{
+    cleanup_tenant as cleanup_tenant_rows, command_pipeline, request_context, shared_pool,
+};
 
 use catalog::application::commands::create_product::{CreateProductCommand, CreateProductHandler};
 use catalog::application::queries::get_product::{GetProductHandler, GetProductQuery};
 
-fn database_url() -> String {
-    std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for integration tests")
-}
-
 fn ctx_with_roles(roles: &[&str]) -> RequestContext {
-    let mut ctx = RequestContext::new(TenantId::new(), UserId::new());
-    ctx.roles = roles.iter().map(|s| (*s).to_string()).collect();
-    ctx
+    request_context(roles)
 }
 
 fn catalog_manager_ctx() -> RequestContext {
     ctx_with_roles(&["catalog_manager"])
 }
 
-static POOL: tokio::sync::OnceCell<Arc<db::PgPool>> = tokio::sync::OnceCell::const_new();
+const CATALOG_TABLES: &[&str] = &[
+    "catalog.products",
+    "common.outbox",
+    "common.audit_log",
+    "common.domain_history",
+];
 
 async fn setup_pool() -> Arc<db::PgPool> {
-    POOL.get_or_init(|| async {
-        let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
-        db::migrate::run_migrations(&pool, "../../migrations/common")
-            .await
-            .unwrap();
-        db::migrate::run_migrations(&pool, "../../migrations/catalog")
-            .await
-            .unwrap();
-        pool
-    })
-    .await
-    .clone()
-}
-
-fn make_pipeline(
-    pool: Arc<db::PgPool>,
-) -> CommandPipeline<db::PgUnitOfWorkFactory> {
-    let uow_factory = Arc::new(db::PgUnitOfWorkFactory::new(pool.clone()));
-    let bus = Arc::new(event_bus::InProcessBus::new());
-    let perm_map = auth::rbac::default_erp_permissions();
-    let checker = Arc::new(auth::checker::JwtPermissionChecker::new(perm_map));
-    let audit = Arc::new(audit::PgAuditLog::new(pool));
-
-    CommandPipeline::new(uow_factory, bus, checker, Arc::new(NoopExtensionHooks), audit)
+    shared_pool(&["../../migrations/common", "../../migrations/catalog"]).await
 }
 
 async fn cleanup_tenant(pool: &db::PgPool, tenant_id: TenantId) {
-    let client = pool.get().await.unwrap();
-    let tid = tenant_id.as_uuid();
-    client
-        .execute("DELETE FROM catalog.products WHERE tenant_id = $1", &[tid])
-        .await
-        .ok();
-    client
-        .execute("DELETE FROM common.outbox WHERE tenant_id = $1", &[tid])
-        .await
-        .ok();
-    client
-        .execute("DELETE FROM common.audit_log WHERE tenant_id = $1", &[tid])
-        .await
-        .ok();
-    client
-        .execute(
-            "DELETE FROM common.domain_history WHERE tenant_id = $1",
-            &[tid],
-        )
-        .await
-        .ok();
+    cleanup_tenant_rows(pool, tenant_id, CATALOG_TABLES).await;
 }
 
 // ─── Test 1: Happy path — create product ────────────────────────────────────
@@ -83,7 +42,7 @@ async fn cleanup_tenant(pool: &db::PgPool, tenant_id: TenantId) {
 #[tokio::test]
 async fn happy_path_create_product() {
     let pool = setup_pool().await;
-    let pipeline = make_pipeline(pool.clone());
+    let pipeline = command_pipeline(pool.clone(), Arc::new(event_bus::InProcessBus::new()));
     let handler = CreateProductHandler::new(pool.clone());
 
     let ctx = catalog_manager_ctx();
@@ -143,7 +102,7 @@ async fn happy_path_create_product() {
 #[tokio::test]
 async fn duplicate_sku_rejected() {
     let pool = setup_pool().await;
-    let pipeline = make_pipeline(pool.clone());
+    let pipeline = command_pipeline(pool.clone(), Arc::new(event_bus::InProcessBus::new()));
     let handler = CreateProductHandler::new(pool.clone());
 
     let ctx = catalog_manager_ctx();
@@ -174,7 +133,7 @@ async fn duplicate_sku_rejected() {
 #[tokio::test]
 async fn unauthorized_rejected() {
     let pool = setup_pool().await;
-    let pipeline = make_pipeline(pool.clone());
+    let pipeline = command_pipeline(pool.clone(), Arc::new(event_bus::InProcessBus::new()));
     let handler = CreateProductHandler::new(pool.clone());
 
     let ctx = ctx_with_roles(&["viewer"]);
@@ -198,7 +157,7 @@ async fn get_product_after_create() {
     use runtime::query_handler::QueryHandler;
 
     let pool = setup_pool().await;
-    let pipeline = make_pipeline(pool.clone());
+    let pipeline = command_pipeline(pool.clone(), Arc::new(event_bus::InProcessBus::new()));
     let create_handler = CreateProductHandler::new(pool.clone());
     let query_handler = GetProductHandler::new(pool.clone());
 
@@ -226,8 +185,8 @@ async fn get_product_after_create() {
 
 #[tokio::test]
 async fn cross_context_product_projection() {
-    use std::time::Duration;
     use event_bus::EventBus;
+    use std::time::Duration;
 
     let pool = setup_pool().await;
 
@@ -270,10 +229,9 @@ async fn cross_context_product_projection() {
     };
     pipeline.execute(&create_handler, &cmd, &ctx).await.unwrap();
 
-    // 2. Run outbox relay → publish ProductCreated → warehouse handler upserts projection
+    // 2. Run outbox relay → publish_and_wait → warehouse handler upserts projection
     let relay = db::OutboxRelay::new(pool.clone(), bus, Duration::from_millis(100), 10);
     let _ = relay.poll_and_publish().await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // 3. Verify projection exists in warehouse schema
     let client = pool.get().await.unwrap();
@@ -296,6 +254,10 @@ async fn cross_context_product_projection() {
         )
         .await
         .ok();
+    client
+        .execute("DELETE FROM common.inbox WHERE event_id IN (SELECT event_id FROM common.outbox WHERE tenant_id = $1)", &[ctx.tenant_id.as_uuid()])
+        .await
+        .ok();
     cleanup_tenant(&pool, ctx.tenant_id).await;
 }
 
@@ -303,10 +265,10 @@ async fn cross_context_product_projection() {
 
 #[tokio::test]
 async fn get_balance_enriched_with_product_name() {
-    use runtime::query_handler::QueryHandler;
-    use std::time::Duration;
     use bigdecimal::BigDecimal;
     use event_bus::EventBus;
+    use runtime::query_handler::QueryHandler;
+    use std::time::Duration;
 
     let pool = setup_pool().await;
 
@@ -349,10 +311,9 @@ async fn get_balance_enriched_with_product_name() {
     };
     pipeline.execute(&create_handler, &cmd, &ctx).await.unwrap();
 
-    // 2. Relay → projection upserted
+    // 2. Relay → publish_and_wait → projection upserted
     let relay = db::OutboxRelay::new(pool.clone(), bus, Duration::from_millis(100), 10);
     let _ = relay.poll_and_publish().await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     // 3. Receive goods in warehouse (need new ctx for fresh correlation_id)
     let mut ctx2 = RequestContext::new(ctx.tenant_id, ctx.user_id);
@@ -377,10 +338,7 @@ async fn get_balance_enriched_with_product_name() {
     };
     let balance = balance_handler.handle(&query, &ctx2).await.unwrap();
     assert_eq!(balance.balance, BigDecimal::from(100));
-    assert_eq!(
-        balance.product_name.as_deref(),
-        Some("Болт обогащённый")
-    );
+    assert_eq!(balance.product_name.as_deref(), Some("Болт обогащённый"));
 
     // Cleanup
     let client = pool.get().await.unwrap();
@@ -414,10 +372,11 @@ async fn get_balance_enriched_with_product_name() {
         .await
         .ok();
     client
-        .execute(
-            "DELETE FROM common.sequences WHERE tenant_id = $1",
-            &[tid],
-        )
+        .execute("DELETE FROM common.sequences WHERE tenant_id = $1", &[tid])
+        .await
+        .ok();
+    client
+        .execute("DELETE FROM common.inbox WHERE event_id IN (SELECT event_id FROM common.outbox WHERE tenant_id = $1)", &[tid])
         .await
         .ok();
     cleanup_tenant(&pool, ctx.tenant_id).await;

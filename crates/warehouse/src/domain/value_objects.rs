@@ -25,7 +25,9 @@ impl Sku {
     pub fn new(value: impl Into<String>) -> Result<Self, WarehouseDomainError> {
         let s = value.into();
         if s.is_empty() {
-            return Err(WarehouseDomainError::InvalidSku("SKU не может быть пустым".into()));
+            return Err(WarehouseDomainError::InvalidSku(
+                "SKU не может быть пустым".into(),
+            ));
         }
         if s.len() > 50 {
             return Err(WarehouseDomainError::InvalidSku(format!(

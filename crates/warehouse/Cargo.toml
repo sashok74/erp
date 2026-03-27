@@ -29,3 +29,4 @@ axum = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 auth = { workspace = true }
+test_support = { workspace = true }

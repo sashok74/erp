@@ -71,10 +71,11 @@ async fn main() {
         .register(&cat, catalog::infrastructure::http::routes)
         .await;
 
-    // 7. Outbox Relay (background task)
+    // 7. Outbox Relay (background task) — uses inbox_bus for enforced dedup
+    let inbox_bus_for_relay = builder.inbox_bus().clone();
     let relay = db::OutboxRelay::new(
         pool,
-        bus,
+        inbox_bus_for_relay as Arc<dyn event_bus::traits::EventBus>,
         Duration::from_millis(config.relay_poll_ms),
         config.relay_batch_size,
     );
@@ -83,7 +84,8 @@ async fn main() {
     });
 
     // 8. Router
-    let app = build_router(builder.into_api(), jwt_service);
+    let inbox_bus = builder.inbox_bus().clone();
+    let app = build_router(builder.into_api(), jwt_service, &inbox_bus);
 
     // 9. Serve
     let listener = tokio::net::TcpListener::bind(&config.listen_addr)
@@ -93,8 +95,12 @@ async fn main() {
     axum::serve(listener, app).await.expect("server error");
 }
 
-/// Собрать Router: /health + /api с auth middleware + опционально /dev/token.
-fn build_router(api: Router, jwt_service: Arc<auth::JwtService>) -> Router {
+/// Собрать Router: /health + /api с auth middleware + опционально /dev/*.
+fn build_router(
+    api: Router,
+    jwt_service: Arc<auth::JwtService>,
+    inbox_bus: &Arc<db::InboxBusDecorator>,
+) -> Router {
     // API routes — все BC под /api/{bc_name}, protected by JWT
     let jwt_for_middleware = jwt_service.clone();
     let api = api.layer(axum::middleware::from_fn(move |req, next| {
@@ -107,13 +113,28 @@ fn build_router(api: Router, jwt_service: Arc<auth::JwtService>) -> Router {
         .nest("/api", api)
         .route("/health", routing::get(health));
 
-    // Dev token endpoint (only when DEV_MODE is set)
+    // Dev endpoints (only when DEV_MODE is set)
     if std::env::var("DEV_MODE").is_ok() {
-        info!("DEV_MODE enabled: POST /dev/token available");
+        info!("DEV_MODE enabled: POST /dev/token, GET /dev/events available");
         let dev = Router::new()
             .route("/dev/token", routing::post(dev_issue_token))
             .with_state(jwt_service);
         root = root.merge(dev);
+
+        let inbox_bus_for_route = inbox_bus.clone();
+        root = root.route(
+            "/dev/events",
+            routing::get(move || {
+                let bus = inbox_bus_for_route.clone();
+                async move {
+                    let entries = bus.event_map().await;
+                    Json(serde_json::json!({
+                        "events": entries,
+                        "total_subscriptions": entries.len(),
+                    }))
+                }
+            }),
+        );
     }
 
     root

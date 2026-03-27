@@ -7,6 +7,7 @@ use runtime::pipeline::CommandPipeline;
 use runtime::query_pipeline::QueryPipeline;
 use runtime::stubs::NoopExtensionHooks;
 
+#[allow(clippy::type_complexity)]
 static POOLS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::OnceCell<Arc<db::PgPool>>>>>> =
     OnceLock::new();
 

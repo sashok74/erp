@@ -1,10 +1,16 @@
 // This file was generated with `clorinde`. Do not modify.
 
 #[derive(Debug)]
-pub struct TryInsertInboxParams<T1: crate::StringSql, T2: crate::StringSql> {
+pub struct TryInsertInboxParams<T1: crate::StringSql, T2: crate::StringSql, T3: crate::StringSql> {
     pub event_id: uuid::Uuid,
     pub event_type: T1,
     pub source: T2,
+    pub handler_name: T3,
+}
+#[derive(Debug)]
+pub struct CheckProcessedParams<T1: crate::StringSql> {
+    pub event_id: uuid::Uuid,
+    pub handler_name: T1,
 }
 use crate::client::async_::GenericClient;
 use futures::{self, StreamExt, TryStreamExt};
@@ -75,7 +81,7 @@ where
 pub struct TryInsertInboxStmt(&'static str, Option<tokio_postgres::Statement>);
 pub fn try_insert_inbox() -> TryInsertInboxStmt {
     TryInsertInboxStmt(
-        "INSERT INTO common.inbox (event_id, event_type, source) VALUES ($1, $2, $3) ON CONFLICT (event_id) DO NOTHING",
+        "INSERT INTO common.inbox (event_id, event_type, source, handler_name) VALUES ($1, $2, $3, $4) ON CONFLICT (event_id, handler_name) DO NOTHING",
         None,
     )
 }
@@ -87,24 +93,39 @@ impl TryInsertInboxStmt {
         self.1 = Some(client.prepare(self.0).await?);
         Ok(self)
     }
-    pub async fn bind<'c, 'a, 's, C: GenericClient, T1: crate::StringSql, T2: crate::StringSql>(
+    pub async fn bind<
+        'c,
+        'a,
+        's,
+        C: GenericClient,
+        T1: crate::StringSql,
+        T2: crate::StringSql,
+        T3: crate::StringSql,
+    >(
         &'s self,
         client: &'c C,
         event_id: &'a uuid::Uuid,
         event_type: &'a T1,
         source: &'a T2,
+        handler_name: &'a T3,
     ) -> Result<u64, tokio_postgres::Error> {
         client
-            .execute(self.0, &[event_id, event_type, source])
+            .execute(self.0, &[event_id, event_type, source, handler_name])
             .await
     }
 }
-impl<'a, C: GenericClient + Send + Sync, T1: crate::StringSql, T2: crate::StringSql>
+impl<
+    'a,
+    C: GenericClient + Send + Sync,
+    T1: crate::StringSql,
+    T2: crate::StringSql,
+    T3: crate::StringSql,
+>
     crate::client::async_::Params<
         'a,
         'a,
         'a,
-        TryInsertInboxParams<T1, T2>,
+        TryInsertInboxParams<T1, T2, T3>,
         std::pin::Pin<
             Box<dyn futures::Future<Output = Result<u64, tokio_postgres::Error>> + Send + 'a>,
         >,
@@ -114,16 +135,25 @@ impl<'a, C: GenericClient + Send + Sync, T1: crate::StringSql, T2: crate::String
     fn params(
         &'a self,
         client: &'a C,
-        params: &'a TryInsertInboxParams<T1, T2>,
+        params: &'a TryInsertInboxParams<T1, T2, T3>,
     ) -> std::pin::Pin<
         Box<dyn futures::Future<Output = Result<u64, tokio_postgres::Error>> + Send + 'a>,
     > {
-        Box::pin(self.bind(client, &params.event_id, &params.event_type, &params.source))
+        Box::pin(self.bind(
+            client,
+            &params.event_id,
+            &params.event_type,
+            &params.source,
+            &params.handler_name,
+        ))
     }
 }
 pub struct CheckProcessedStmt(&'static str, Option<tokio_postgres::Statement>);
 pub fn check_processed() -> CheckProcessedStmt {
-    CheckProcessedStmt("SELECT 1 FROM common.inbox WHERE event_id = $1", None)
+    CheckProcessedStmt(
+        "SELECT 1 FROM common.inbox WHERE event_id = $1 AND handler_name = $2",
+        None,
+    )
 }
 impl CheckProcessedStmt {
     pub async fn prepare<'a, C: GenericClient>(
@@ -133,18 +163,37 @@ impl CheckProcessedStmt {
         self.1 = Some(client.prepare(self.0).await?);
         Ok(self)
     }
-    pub fn bind<'c, 'a, 's, C: GenericClient>(
+    pub fn bind<'c, 'a, 's, C: GenericClient, T1: crate::StringSql>(
         &'s self,
         client: &'c C,
         event_id: &'a uuid::Uuid,
-    ) -> I32Query<'c, 'a, 's, C, i32, 1> {
+        handler_name: &'a T1,
+    ) -> I32Query<'c, 'a, 's, C, i32, 2> {
         I32Query {
             client,
-            params: [event_id],
+            params: [event_id, handler_name],
             query: self.0,
             cached: self.1.as_ref(),
             extractor: |row| Ok(row.try_get(0)?),
             mapper: |it| it,
         }
+    }
+}
+impl<'c, 'a, 's, C: GenericClient, T1: crate::StringSql>
+    crate::client::async_::Params<
+        'c,
+        'a,
+        's,
+        CheckProcessedParams<T1>,
+        I32Query<'c, 'a, 's, C, i32, 2>,
+        C,
+    > for CheckProcessedStmt
+{
+    fn params(
+        &'s self,
+        client: &'c C,
+        params: &'a CheckProcessedParams<T1>,
+    ) -> I32Query<'c, 'a, 's, C, i32, 2> {
+        self.bind(client, &params.event_id, &params.handler_name)
     }
 }

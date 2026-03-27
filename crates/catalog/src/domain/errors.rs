@@ -51,6 +51,9 @@ mod tests {
     #[test]
     fn duplicate_sku_converts_to_domain() {
         let err: AppError = CatalogDomainError::DuplicateSku("BOLT-42".into()).into();
-        assert!(matches!(err, AppError::Domain(DomainError::BusinessRule(_))));
+        assert!(matches!(
+            err,
+            AppError::Domain(DomainError::BusinessRule(_))
+        ));
     }
 }

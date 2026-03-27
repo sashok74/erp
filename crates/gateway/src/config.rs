@@ -22,11 +22,10 @@ impl AppConfig {
     /// Паникует если обязательные переменные отсутствуют или невалидны.
     #[must_use]
     pub fn from_env() -> Self {
-        let database_url = std::env::var("DATABASE_URL")
-            .expect("DATABASE_URL must be set");
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
 
-        let jwt_secret = std::env::var("JWT_SECRET")
-            .expect("JWT_SECRET must be set (minimum 32 bytes)");
+        let jwt_secret =
+            std::env::var("JWT_SECRET").expect("JWT_SECRET must be set (minimum 32 bytes)");
 
         assert!(
             jwt_secret.len() >= 32,
@@ -34,8 +33,8 @@ impl AppConfig {
             jwt_secret.len()
         );
 
-        let listen_addr = std::env::var("LISTEN_ADDR")
-            .unwrap_or_else(|_| "0.0.0.0:3000".to_string());
+        let listen_addr =
+            std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".to_string());
 
         let relay_poll_ms = std::env::var("RELAY_POLL_MS")
             .unwrap_or_else(|_| "500".to_string())

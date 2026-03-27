@@ -11,118 +11,41 @@ use async_trait::async_trait;
 use bigdecimal::BigDecimal;
 use event_bus::traits::{EventBus, EventHandler};
 use event_bus::{EventHandlerAdapter, InProcessBus};
-use kernel::types::{RequestContext, TenantId, UserId};
-use runtime::pipeline::CommandPipeline;
-use runtime::stubs::NoopExtensionHooks;
+use kernel::types::{RequestContext, TenantId};
 use serde::{Deserialize, Serialize};
+use test_support::{
+    cleanup_tenant as cleanup_tenant_rows, command_pipeline, request_context, shared_pool,
+};
 use uuid::Uuid;
 
 use warehouse::application::commands::receive_goods::{ReceiveGoodsCommand, ReceiveGoodsHandler};
 use warehouse::application::queries::get_balance::{GetBalanceHandler, GetBalanceQuery};
 
-fn database_url() -> String {
-    std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for integration tests")
-}
-
 fn ctx_with_roles(roles: &[&str]) -> RequestContext {
-    let mut ctx = RequestContext::new(TenantId::new(), UserId::new());
-    ctx.roles = roles.iter().map(|s| (*s).to_string()).collect();
-    ctx
+    request_context(roles)
 }
 
 fn operator_ctx() -> RequestContext {
     ctx_with_roles(&["warehouse_operator"])
 }
 
-/// Shared pool with migrations applied once.
-static POOL: tokio::sync::OnceCell<Arc<db::PgPool>> = tokio::sync::OnceCell::const_new();
+const WAREHOUSE_TABLES: &[&str] = &[
+    "warehouse.inventory_balances",
+    "warehouse.stock_movements",
+    "warehouse.inventory_items",
+    "common.outbox",
+    "common.audit_log",
+    "common.domain_history",
+    "common.sequences",
+];
 
 async fn setup_pool() -> Arc<db::PgPool> {
-    POOL.get_or_init(|| async {
-        let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
-
-        // Ensure migrations applied (idempotent).
-        db::migrate::run_migrations(&pool, "../../migrations/common")
-            .await
-            .unwrap();
-        db::migrate::run_migrations(&pool, "../../migrations/warehouse")
-            .await
-            .unwrap();
-
-        pool
-    })
-    .await
-    .clone()
-}
-
-fn make_pipeline(
-    pool: Arc<db::PgPool>,
-    bus: Arc<InProcessBus>,
-) -> CommandPipeline<db::PgUnitOfWorkFactory> {
-    let uow_factory = Arc::new(db::PgUnitOfWorkFactory::new(pool.clone()));
-    let perm_map = auth::rbac::default_erp_permissions();
-    let checker = Arc::new(auth::checker::JwtPermissionChecker::new(perm_map));
-    let audit = Arc::new(audit::PgAuditLog::new(pool));
-
-    CommandPipeline::new(uow_factory, bus, checker, Arc::new(NoopExtensionHooks), audit)
+    shared_pool(&["../../migrations/common", "../../migrations/warehouse"]).await
 }
 
 /// Cleanup helper: delete warehouse data for a specific tenant.
 async fn cleanup_tenant(pool: &db::PgPool, tenant_id: TenantId) {
-    let client = pool.get().await.unwrap();
-    let tid = tenant_id.as_uuid();
-
-    // Warehouse tables
-    client
-        .execute(
-            "DELETE FROM warehouse.inventory_balances WHERE tenant_id = $1",
-            &[tid],
-        )
-        .await
-        .ok();
-    client
-        .execute(
-            "DELETE FROM warehouse.stock_movements WHERE tenant_id = $1",
-            &[tid],
-        )
-        .await
-        .ok();
-    client
-        .execute(
-            "DELETE FROM warehouse.inventory_items WHERE tenant_id = $1",
-            &[tid],
-        )
-        .await
-        .ok();
-    // Common tables
-    client
-        .execute(
-            "DELETE FROM common.outbox WHERE tenant_id = $1",
-            &[tid],
-        )
-        .await
-        .ok();
-    client
-        .execute(
-            "DELETE FROM common.audit_log WHERE tenant_id = $1",
-            &[tid],
-        )
-        .await
-        .ok();
-    client
-        .execute(
-            "DELETE FROM common.domain_history WHERE tenant_id = $1",
-            &[tid],
-        )
-        .await
-        .ok();
-    client
-        .execute(
-            "DELETE FROM common.sequences WHERE tenant_id = $1",
-            &[tid],
-        )
-        .await
-        .ok();
+    cleanup_tenant_rows(pool, tenant_id, WAREHOUSE_TABLES).await;
 }
 
 // ─── Test 1: Happy path — receive goods ─────────────────────────────────────
@@ -131,7 +54,7 @@ async fn cleanup_tenant(pool: &db::PgPool, tenant_id: TenantId) {
 async fn happy_path_receive_goods() {
     let pool = setup_pool().await;
     let bus = Arc::new(InProcessBus::new());
-    let pipeline = make_pipeline(pool.clone(), bus);
+    let pipeline = command_pipeline(pool.clone(), bus);
     let handler = ReceiveGoodsHandler::new(pool.clone());
 
     let ctx = operator_ctx();
@@ -219,7 +142,7 @@ async fn happy_path_receive_goods() {
 async fn cumulative_receive() {
     let pool = setup_pool().await;
     let bus = Arc::new(InProcessBus::new());
-    let pipeline = make_pipeline(pool.clone(), bus);
+    let pipeline = command_pipeline(pool.clone(), bus);
     let handler = ReceiveGoodsHandler::new(pool.clone());
 
     let ctx = operator_ctx();
@@ -269,7 +192,7 @@ async fn cumulative_receive() {
 async fn unauthorized_rejected() {
     let pool = setup_pool().await;
     let bus = Arc::new(InProcessBus::new());
-    let pipeline = make_pipeline(pool.clone(), bus);
+    let pipeline = command_pipeline(pool.clone(), bus);
     let handler = ReceiveGoodsHandler::new(pool.clone());
 
     let ctx = ctx_with_roles(&["viewer"]); // no warehouse permissions
@@ -292,7 +215,10 @@ async fn unauthorized_rejected() {
         .await
         .unwrap()
         .get(0);
-    assert_eq!(count, 0, "no movements should exist for unauthorized request");
+    assert_eq!(
+        count, 0,
+        "no movements should exist for unauthorized request"
+    );
 
     cleanup_tenant(&pool, ctx.tenant_id).await;
 }
@@ -305,7 +231,7 @@ async fn get_balance_after_receive() {
 
     let pool = setup_pool().await;
     let bus = Arc::new(InProcessBus::new());
-    let pipeline = make_pipeline(pool.clone(), bus);
+    let pipeline = command_pipeline(pool.clone(), bus);
     let handler = ReceiveGoodsHandler::new(pool.clone());
     let query_handler = GetBalanceHandler::new(pool.clone());
 
@@ -335,7 +261,7 @@ async fn rls_tenant_isolation() {
 
     let pool = setup_pool().await;
     let bus = Arc::new(InProcessBus::new());
-    let pipeline = make_pipeline(pool.clone(), bus);
+    let pipeline = command_pipeline(pool.clone(), bus);
     let handler = ReceiveGoodsHandler::new(pool.clone());
     let query_handler = GetBalanceHandler::new(pool.clone());
 
@@ -412,7 +338,7 @@ async fn outbox_relay_delivers_event() {
     bus.subscribe("erp.warehouse.goods_received.v1", adapted)
         .await;
 
-    let pipeline = make_pipeline(pool.clone(), bus.clone());
+    let pipeline = command_pipeline(pool.clone(), bus.clone());
     let cmd_handler = ReceiveGoodsHandler::new(pool.clone());
 
     let ctx = operator_ctx();
@@ -429,7 +355,10 @@ async fn outbox_relay_delivers_event() {
     // Give async handler time to complete
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    assert!(called.load(Ordering::SeqCst), "subscriber should have been called");
+    assert!(
+        called.load(Ordering::SeqCst),
+        "subscriber should have been called"
+    );
 
     cleanup_tenant(&pool, ctx.tenant_id).await;
 }
@@ -440,7 +369,7 @@ async fn outbox_relay_delivers_event() {
 async fn doc_number_sequence_gap_free() {
     let pool = setup_pool().await;
     let bus = Arc::new(InProcessBus::new());
-    let pipeline = make_pipeline(pool.clone(), bus);
+    let pipeline = command_pipeline(pool.clone(), bus);
     let handler = ReceiveGoodsHandler::new(pool.clone());
 
     let ctx = operator_ctx();

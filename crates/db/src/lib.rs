@@ -7,6 +7,7 @@
 //! RLS обеспечивает tenant isolation на уровне БД.
 //! `clorinde-gen` crate содержит типобезопасные SQL-запросы.
 
+pub mod bus_decorator;
 pub mod context;
 pub mod conversions;
 pub mod inbox;
@@ -20,6 +21,7 @@ pub mod uow;
 
 pub use transport::DecStr;
 
+pub use bus_decorator::InboxBusDecorator;
 pub use context::{PgCommandContext, ReadDbContext};
 pub use inbox::InboxGuard;
 pub use pool::PgPool;

@@ -26,6 +26,7 @@ Target the stable toolchain defined in `rust-toolchain.toml`; `rustfmt` and `cli
 ## Testing Guidelines
 
 Use `cargo test` through `just test` for all changes. Integration and end-to-end suites belong in `tests/integration` and `tests/e2e`; crate-local unit tests should stay next to the code they cover. Name tests for observable behavior, for example `creates_sequence_without_gaps`. Add tests for new business rules, migrations, and bug fixes before opening a PR.
+For BC integration tests in this repository, follow [`docs/testing_integration_style.md`](/home/raa/RustProjects/erp/docs/testing_integration_style.md): reuse `crates/test_support` for shared pool, request context, pipeline wiring, and tenant cleanup instead of duplicating setup code per crate.
 
 ## Commit & Pull Request Guidelines
 

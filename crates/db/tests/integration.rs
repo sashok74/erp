@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use event_bus::InProcessBus;
+use event_bus::registry::ErasedEventHandler;
 use event_bus::traits::{EventBus, EventHandler};
 use event_bus::{EventEnvelope, EventHandlerAdapter};
 use kernel::DomainEvent;
@@ -375,23 +376,32 @@ async fn clorinde_inbox_dedup() {
 
     let event_id = Uuid::now_v7();
 
+    let handler_name = "test_handler";
+
     // First insert → 1 row.
     let inserted = clorinde_gen::queries::common::inbox::try_insert_inbox()
-        .bind(&client, &event_id, &"erp.test.inbox.v1", &"test")
+        .bind(&client, &event_id, &"erp.test.inbox.v1", &"test", &handler_name)
         .await
         .unwrap();
     assert_eq!(inserted, 1, "first insert should succeed");
 
-    // Duplicate → 0 rows (idempotent).
+    // Duplicate (same event_id + handler_name) → 0 rows (idempotent).
     let dup = clorinde_gen::queries::common::inbox::try_insert_inbox()
-        .bind(&client, &event_id, &"erp.test.inbox.v1", &"test")
+        .bind(&client, &event_id, &"erp.test.inbox.v1", &"test", &handler_name)
         .await
         .unwrap();
     assert_eq!(dup, 0, "duplicate insert should be no-op");
 
+    // Different handler_name → 1 row (independent).
+    let other_handler = clorinde_gen::queries::common::inbox::try_insert_inbox()
+        .bind(&client, &event_id, &"erp.test.inbox.v1", &"test", &"other_handler")
+        .await
+        .unwrap();
+    assert_eq!(other_handler, 1, "different handler should succeed");
+
     // check_processed → true.
     let processed = clorinde_gen::queries::common::inbox::check_processed()
-        .bind(&client, &event_id)
+        .bind(&client, &event_id, &handler_name)
         .opt()
         .await
         .unwrap();
@@ -597,12 +607,11 @@ async fn relay_publishes_outbox_entry() {
     drop(client);
 
     // Run relay — may publish more than 1 entry if other tests left data.
+    // Relay now uses publish_and_wait (synchronous), so no sleep needed.
     let relay = db::OutboxRelay::new(pool.clone(), bus.clone(), Duration::from_millis(50), 100);
     let published = relay.poll_and_publish().await.unwrap();
     assert!(published >= 1, "at least our entry should be published");
 
-    // Give spawned handler task time to complete.
-    tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         called.load(Ordering::SeqCst),
         "handler should have been called"
@@ -767,24 +776,35 @@ async fn inbox_guard_dedup() {
     let inbox = db::InboxGuard::new(pool.clone());
 
     let event_id = Uuid::now_v7();
+    let handler = "test_handler";
 
     // First → true (new).
     let first = inbox
-        .try_process(event_id, "erp.test.inbox_guard.v1", "test")
+        .mark_processed(event_id, "erp.test.inbox_guard.v1", "test", handler)
         .await
         .unwrap();
     assert!(first, "first call should return true");
 
-    // Second → false (duplicate).
+    // is_processed → true.
+    assert!(inbox.is_processed(event_id, handler).await.unwrap());
+
+    // Second mark → false (duplicate).
     let second = inbox
-        .try_process(event_id, "erp.test.inbox_guard.v1", "test")
+        .mark_processed(event_id, "erp.test.inbox_guard.v1", "test", handler)
         .await
         .unwrap();
     assert!(!second, "second call should return false");
 
+    // Different handler_name, same event_id → true (independent).
+    let other_handler = inbox
+        .mark_processed(event_id, "erp.test.inbox_guard.v1", "test", "other_handler")
+        .await
+        .unwrap();
+    assert!(other_handler, "different handler should return true");
+
     // Different event_id → true.
     let other = inbox
-        .try_process(Uuid::now_v7(), "erp.test.inbox_guard.v1", "test")
+        .mark_processed(Uuid::now_v7(), "erp.test.inbox_guard.v1", "test", handler)
         .await
         .unwrap();
     assert!(other, "different event_id should return true");
@@ -795,4 +815,375 @@ async fn inbox_guard_dedup() {
         .execute("DELETE FROM common.inbox WHERE event_id = $1", &[&event_id])
         .await
         .unwrap();
+}
+
+// ─── InboxAwareHandler ─────────────────────────────────────────────────────
+
+use std::sync::atomic::AtomicUsize;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct InboxTestEvt {
+    id: Uuid,
+}
+
+impl DomainEvent for InboxTestEvt {
+    fn event_type(&self) -> &'static str {
+        "erp.test.inbox_aware.v1"
+    }
+    fn aggregate_id(&self) -> Uuid {
+        self.id
+    }
+}
+
+struct CountingTestHandler {
+    count: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl EventHandler for CountingTestHandler {
+    type Event = InboxTestEvt;
+
+    async fn handle(&self, _event: &Self::Event) -> Result<(), anyhow::Error> {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn handled_event_type(&self) -> &'static str {
+        "erp.test.inbox_aware.v1"
+    }
+}
+
+struct FailingTestHandler;
+
+#[async_trait]
+impl EventHandler for FailingTestHandler {
+    type Event = InboxTestEvt;
+
+    async fn handle(&self, _event: &Self::Event) -> Result<(), anyhow::Error> {
+        anyhow::bail!("handler error")
+    }
+
+    fn handled_event_type(&self) -> &'static str {
+        "erp.test.inbox_aware.v1"
+    }
+}
+
+fn make_inbox_envelope(ctx: &RequestContext) -> EventEnvelope {
+    let evt = InboxTestEvt { id: Uuid::now_v7() };
+    EventEnvelope::from_domain_event(&evt, ctx, "test").unwrap()
+}
+
+#[tokio::test]
+async fn inbox_aware_handler_first_call_succeeds() {
+    let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
+    let inbox = Arc::new(db::InboxGuard::new(pool.clone()));
+    let count = Arc::new(AtomicUsize::new(0));
+
+    let inner = Arc::new(EventHandlerAdapter::new(CountingTestHandler {
+        count: count.clone(),
+    }));
+    let handler = db::inbox::InboxAwareHandler::new(inner, inbox);
+
+    let ctx = new_ctx();
+    let envelope = make_inbox_envelope(&ctx);
+    let event_id = envelope.event_id;
+
+    // First call → inner handler called, inbox recorded.
+    handler.handle_envelope(&envelope).await.unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // Cleanup.
+    let client = pool.get().await.unwrap();
+    client
+        .execute("DELETE FROM common.inbox WHERE event_id = $1", &[&event_id])
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn inbox_aware_handler_duplicate_skipped() {
+    let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
+    let inbox = Arc::new(db::InboxGuard::new(pool.clone()));
+    let count = Arc::new(AtomicUsize::new(0));
+
+    let inner = Arc::new(EventHandlerAdapter::new(CountingTestHandler {
+        count: count.clone(),
+    }));
+    let handler = db::inbox::InboxAwareHandler::new(inner, inbox);
+
+    let ctx = new_ctx();
+    let envelope = make_inbox_envelope(&ctx);
+    let event_id = envelope.event_id;
+
+    // First call.
+    handler.handle_envelope(&envelope).await.unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // Second call with same event_id → skipped.
+    handler.handle_envelope(&envelope).await.unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1, "duplicate should be skipped");
+
+    // Cleanup.
+    let client = pool.get().await.unwrap();
+    client
+        .execute("DELETE FROM common.inbox WHERE event_id = $1", &[&event_id])
+        .await
+        .unwrap();
+}
+
+struct CountingTestHandlerB {
+    count: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl EventHandler for CountingTestHandlerB {
+    type Event = InboxTestEvt;
+
+    async fn handle(&self, _event: &Self::Event) -> Result<(), anyhow::Error> {
+        self.count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn handled_event_type(&self) -> &'static str {
+        "erp.test.inbox_aware.v1"
+    }
+}
+
+#[tokio::test]
+async fn inbox_aware_handler_different_handlers_independent() {
+    let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
+    let inbox = Arc::new(db::InboxGuard::new(pool.clone()));
+
+    let count_a = Arc::new(AtomicUsize::new(0));
+    let count_b = Arc::new(AtomicUsize::new(0));
+
+    // Use different handler types → different handler_name via type_name.
+    let inner_a = Arc::new(EventHandlerAdapter::new(CountingTestHandler {
+        count: count_a.clone(),
+    }));
+    let inner_b = Arc::new(EventHandlerAdapter::new(CountingTestHandlerB {
+        count: count_b.clone(),
+    }));
+
+    let handler_a = db::inbox::InboxAwareHandler::new(inner_a, inbox.clone());
+    let handler_b = db::inbox::InboxAwareHandler::new(inner_b, inbox);
+
+    let ctx = new_ctx();
+    let envelope = make_inbox_envelope(&ctx);
+    let event_id = envelope.event_id;
+
+    // Both handlers process same event_id → both called (different handler_name).
+    handler_a.handle_envelope(&envelope).await.unwrap();
+    handler_b.handle_envelope(&envelope).await.unwrap();
+    assert_eq!(count_a.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(count_b.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // Cleanup.
+    let client = pool.get().await.unwrap();
+    client
+        .execute("DELETE FROM common.inbox WHERE event_id = $1", &[&event_id])
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn inbox_aware_handler_error_allows_retry() {
+    let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
+    let inbox = Arc::new(db::InboxGuard::new(pool.clone()));
+
+    let inner: Arc<dyn event_bus::ErasedEventHandler> =
+        Arc::new(EventHandlerAdapter::new(FailingTestHandler));
+    let handler = db::inbox::InboxAwareHandler::new(inner, inbox.clone());
+
+    let ctx = new_ctx();
+    let envelope = make_inbox_envelope(&ctx);
+    let event_id = envelope.event_id;
+    let handler_name = "event_bus::registry::EventHandlerAdapter<db::integration::FailingTestHandler>";
+
+    // Handler returns Err → inbox NOT recorded.
+    let result = handler.handle_envelope(&envelope).await;
+    assert!(result.is_err());
+
+    // Inbox should NOT have a record → retry should work.
+    assert!(
+        !inbox.is_processed(event_id, handler_name).await.unwrap(),
+        "inbox should not be recorded after handler error"
+    );
+
+    // Cleanup.
+    let client = pool.get().await.unwrap();
+    client
+        .execute("DELETE FROM common.inbox WHERE event_id = $1", &[&event_id])
+        .await
+        .unwrap();
+}
+
+// ─── InboxBusDecorator ─────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn inbox_bus_decorator_event_map() {
+    let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
+    let inner_bus = Arc::new(InProcessBus::new());
+    let decorator = db::InboxBusDecorator::new(
+        inner_bus as Arc<dyn EventBus>,
+        pool,
+    );
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let handler = Arc::new(EventHandlerAdapter::new(CountingTestHandler {
+        count: count.clone(),
+    }));
+    decorator
+        .subscribe("erp.test.inbox_aware.v1", handler)
+        .await;
+
+    let map = decorator.event_map().await;
+    assert_eq!(map.len(), 1);
+    assert_eq!(map[0].event_type, "erp.test.inbox_aware.v1");
+    assert!(!map[0].handler_name.is_empty());
+}
+
+#[tokio::test]
+async fn inbox_bus_decorator_dedup_via_publish_and_wait() {
+    let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
+    let inner_bus = Arc::new(InProcessBus::new());
+    let decorator = db::InboxBusDecorator::new(
+        inner_bus as Arc<dyn EventBus>,
+        pool.clone(),
+    );
+
+    let count = Arc::new(AtomicUsize::new(0));
+    let handler = Arc::new(EventHandlerAdapter::new(CountingTestHandler {
+        count: count.clone(),
+    }));
+    decorator
+        .subscribe("erp.test.inbox_aware.v1", handler)
+        .await;
+
+    let ctx = new_ctx();
+    let envelope = make_inbox_envelope(&ctx);
+    let event_id = envelope.event_id;
+
+    // First publish → handler called.
+    decorator.publish_and_wait(envelope.clone()).await.unwrap();
+    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    // Second publish same event_id → skipped by inbox.
+    decorator.publish_and_wait(envelope).await.unwrap();
+    assert_eq!(
+        count.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "duplicate should be skipped"
+    );
+
+    // Cleanup.
+    let client = pool.get().await.unwrap();
+    client
+        .execute("DELETE FROM common.inbox WHERE event_id = $1", &[&event_id])
+        .await
+        .unwrap();
+}
+
+// ─── Relay + InboxAwareHandler E2E ─────────────────────────────────────────
+
+#[tokio::test]
+async fn relay_handler_error_allows_retry_via_inbox() {
+    let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
+    let inner_bus = Arc::new(InProcessBus::new());
+    let decorator = Arc::new(db::InboxBusDecorator::new(
+        inner_bus as Arc<dyn EventBus>,
+        pool.clone(),
+    ));
+
+    // Subscribe a failing handler.
+    let handler: Arc<dyn event_bus::ErasedEventHandler> =
+        Arc::new(EventHandlerAdapter::new(FailingTestHandler));
+    decorator
+        .subscribe("erp.test.inbox_aware.v1", handler)
+        .await;
+
+    // Insert outbox entry.
+    let ctx = new_ctx();
+    let evt = InboxTestEvt { id: Uuid::now_v7() };
+    let envelope = EventEnvelope::from_domain_event(&evt, &ctx, "test").unwrap();
+    let event_id = envelope.event_id;
+
+    let client = pool.get().await.unwrap();
+
+    // Mark existing unpublished entries to avoid interference.
+    client
+        .execute(
+            "UPDATE common.outbox SET published = true, published_at = now() \
+             WHERE published = false",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let tenant_id = *ctx.tenant_id.as_uuid();
+    let user_id = *ctx.user_id.as_uuid();
+    let created_at = envelope.timestamp.fixed_offset();
+    clorinde_gen::queries::common::outbox::insert_outbox_entry()
+        .bind(
+            &client,
+            &tenant_id,
+            &envelope.event_id,
+            &envelope.event_type,
+            &envelope.source,
+            &envelope.payload,
+            &envelope.correlation_id,
+            &envelope.causation_id,
+            &user_id,
+            &created_at,
+        )
+        .one()
+        .await
+        .unwrap();
+    drop(client);
+
+    // Run relay — publish_and_wait → handler fails → retry_count incremented.
+    let relay = db::OutboxRelay::new(
+        pool.clone(),
+        decorator as Arc<dyn EventBus>,
+        Duration::from_millis(50),
+        100,
+    );
+    relay.poll_and_publish().await.unwrap();
+
+    // Verify retry_count incremented, NOT published.
+    let client = pool.get().await.unwrap();
+    let row = client
+        .query_one(
+            "SELECT retry_count, published FROM common.outbox WHERE event_id = $1",
+            &[&event_id],
+        )
+        .await
+        .unwrap();
+    let retry_count: i32 = row.get(0);
+    let published_flag: bool = row.get(1);
+    assert!(retry_count >= 1, "retry_count should be at least 1");
+    assert!(!published_flag, "should not be published after handler failure");
+
+    // Inbox should NOT have a record → retry would re-invoke handler.
+    let inbox_row = client
+        .query_opt(
+            "SELECT 1 FROM common.inbox WHERE event_id = $1",
+            &[&event_id],
+        )
+        .await
+        .unwrap();
+    assert!(
+        inbox_row.is_none(),
+        "inbox should not be recorded after handler error"
+    );
+
+    // Cleanup.
+    client
+        .execute("DELETE FROM common.outbox WHERE event_id = $1", &[&event_id])
+        .await
+        .unwrap();
+    client
+        .execute("DELETE FROM common.inbox WHERE event_id = $1", &[&event_id])
+        .await
+        .ok();
 }

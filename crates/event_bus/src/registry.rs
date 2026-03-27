@@ -28,6 +28,12 @@ pub trait ErasedEventHandler: Send + Sync + 'static {
 
     /// Тип события, на которое подписан handler (для routing).
     fn event_type(&self) -> &'static str;
+
+    /// Имя handler'а для inbox dedup и event registry.
+    /// Default: `event_type()` (backward-compatible).
+    fn handler_name(&self) -> &str {
+        self.event_type()
+    }
 }
 
 /// Обёртка, реализующая `ErasedEventHandler` для конкретного `EventHandler`.
@@ -36,12 +42,16 @@ pub trait ErasedEventHandler: Send + Sync + 'static {
 /// транспортным уровнем (`EventEnvelope` с `serde_json::Value` payload).
 pub struct EventHandlerAdapter<H: EventHandler> {
     handler: H,
+    type_name: &'static str,
 }
 
 impl<H: EventHandler> EventHandlerAdapter<H> {
     /// Обернуть типизированный handler.
     pub fn new(handler: H) -> Self {
-        Self { handler }
+        Self {
+            handler,
+            type_name: std::any::type_name::<H>(),
+        }
     }
 }
 
@@ -58,6 +68,10 @@ where
 
     fn event_type(&self) -> &'static str {
         self.handler.handled_event_type()
+    }
+
+    fn handler_name(&self) -> &str {
+        self.type_name
     }
 }
 

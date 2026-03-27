@@ -10,6 +10,7 @@
 2. **`docs/engineering_invariants.md`** — правила, которые никогда не ослабляются
 3. **`docs/event_bus_architecture.md`** — как работает шина событий
 4. **`crates/*/src/lib.rs`** — точка входа в каждый crate, doc-comments объясняют назначение
+5. **`docs/testing_integration_style.md`** — как писать integration tests для BC без копипасты setup; новые integration tests делать только по этому шаблону
 
 ## При создании нового Bounded Context
 
@@ -151,6 +152,7 @@ crates/
 
 - Domain unit-тесты: `#[cfg(test)] mod tests`, без БД
 - Integration: с реальной PostgreSQL через DATABASE_URL
+- Integration tests для BC писать по `docs/testing_integration_style.md`; общий setup брать из `crates/test_support`
 - Pipeline тесты: со stubs, мгновенные
 
 ---

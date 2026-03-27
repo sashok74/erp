@@ -35,8 +35,10 @@ mod tests {
 
     #[test]
     fn std_io_error_converts_with_context() {
-        let result: Result<i32, std::io::Error> =
-            Err(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "connection refused"));
+        let result: Result<i32, std::io::Error> = Err(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        ));
         let err = result.internal("db_connect").unwrap_err();
         match err {
             AppError::Internal(msg) => assert!(msg.contains("db_connect: connection refused")),
