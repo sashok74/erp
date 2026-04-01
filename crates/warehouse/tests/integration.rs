@@ -73,60 +73,70 @@ async fn happy_path_receive_goods() {
     let item_id = result.item_id;
     let corr_id = ctx.correlation_id;
     let (balance, count, event_type, command_name, entity_type, history_event_type) =
-        test_support::tenant_query(&pool, ctx.tenant_id, |client| Box::pin(async move {
-            let row = client
-                .query_one(
-                    "SELECT balance::TEXT FROM warehouse.inventory_balances \
+        test_support::tenant_query(&pool, ctx.tenant_id, |client| {
+            Box::pin(async move {
+                let row = client
+                    .query_one(
+                        "SELECT balance::TEXT FROM warehouse.inventory_balances \
                      WHERE tenant_id = $1 AND item_id = $2",
-                    &[ctx.tenant_id.as_uuid(), &item_id],
-                )
-                .await
-                .unwrap();
-            let balance: String = row.get(0);
+                        &[ctx.tenant_id.as_uuid(), &item_id],
+                    )
+                    .await
+                    .unwrap();
+                let balance: String = row.get(0);
 
-            let count: i64 = client
-                .query_one(
-                    "SELECT COUNT(*) FROM warehouse.stock_movements \
+                let count: i64 = client
+                    .query_one(
+                        "SELECT COUNT(*) FROM warehouse.stock_movements \
                      WHERE tenant_id = $1 AND item_id = $2",
-                    &[ctx.tenant_id.as_uuid(), &item_id],
-                )
-                .await
-                .unwrap()
-                .get(0);
+                        &[ctx.tenant_id.as_uuid(), &item_id],
+                    )
+                    .await
+                    .unwrap()
+                    .get(0);
 
-            let outbox_row = client
-                .query_one(
-                    "SELECT event_type FROM common.outbox \
+                let outbox_row = client
+                    .query_one(
+                        "SELECT event_type FROM common.outbox \
                      WHERE tenant_id = $1 AND correlation_id = $2",
-                    &[ctx.tenant_id.as_uuid(), &corr_id],
-                )
-                .await
-                .unwrap();
-            let event_type: String = outbox_row.get(0);
+                        &[ctx.tenant_id.as_uuid(), &corr_id],
+                    )
+                    .await
+                    .unwrap();
+                let event_type: String = outbox_row.get(0);
 
-            let audit_row = client
-                .query_one(
-                    "SELECT command_name FROM common.audit_log \
+                let audit_row = client
+                    .query_one(
+                        "SELECT command_name FROM common.audit_log \
                      WHERE tenant_id = $1 AND correlation_id = $2",
-                    &[ctx.tenant_id.as_uuid(), &corr_id],
-                )
-                .await
-                .unwrap();
-            let command_name: String = audit_row.get(0);
+                        &[ctx.tenant_id.as_uuid(), &corr_id],
+                    )
+                    .await
+                    .unwrap();
+                let command_name: String = audit_row.get(0);
 
-            let history_row = client
-                .query_one(
-                    "SELECT entity_type, event_type FROM common.domain_history \
+                let history_row = client
+                    .query_one(
+                        "SELECT entity_type, event_type FROM common.domain_history \
                      WHERE tenant_id = $1 AND correlation_id = $2",
-                    &[ctx.tenant_id.as_uuid(), &corr_id],
-                )
-                .await
-                .unwrap();
-            let entity_type: String = history_row.get(0);
-            let history_event_type: String = history_row.get(1);
+                        &[ctx.tenant_id.as_uuid(), &corr_id],
+                    )
+                    .await
+                    .unwrap();
+                let entity_type: String = history_row.get(0);
+                let history_event_type: String = history_row.get(1);
 
-            (balance, count, event_type, command_name, entity_type, history_event_type)
-        })).await;
+                (
+                    balance,
+                    count,
+                    event_type,
+                    command_name,
+                    entity_type,
+                    history_event_type,
+                )
+            })
+        })
+        .await;
 
     assert_eq!(balance, "100.0000");
     assert_eq!(count, 1);
@@ -175,18 +185,21 @@ async fn cumulative_receive() {
 
     // Assert 2 movements
     let item_id = r1.item_id;
-    let count = test_support::tenant_query(&pool, ctx.tenant_id, |client| Box::pin(async move {
-        let count: i64 = client
-            .query_one(
-                "SELECT COUNT(*) FROM warehouse.stock_movements \
+    let count = test_support::tenant_query(&pool, ctx.tenant_id, |client| {
+        Box::pin(async move {
+            let count: i64 = client
+                .query_one(
+                    "SELECT COUNT(*) FROM warehouse.stock_movements \
                  WHERE tenant_id = $1 AND item_id = $2",
-                &[ctx.tenant_id.as_uuid(), &item_id],
-            )
-            .await
-            .unwrap()
-            .get(0);
-        count
-    })).await;
+                    &[ctx.tenant_id.as_uuid(), &item_id],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            count
+        })
+    })
+    .await;
     assert_eq!(count, 2);
 
     cleanup_tenant(&pool, ctx.tenant_id).await;
@@ -211,18 +224,21 @@ async fn unauthorized_rejected() {
     assert!(matches!(result, Err(kernel::AppError::Unauthorized(_))));
 
     // No side effects
-    let count = test_support::tenant_query(&pool, ctx.tenant_id, |client| Box::pin(async move {
-        let count: i64 = client
-            .query_one(
-                "SELECT COUNT(*) FROM warehouse.stock_movements \
+    let count = test_support::tenant_query(&pool, ctx.tenant_id, |client| {
+        Box::pin(async move {
+            let count: i64 = client
+                .query_one(
+                    "SELECT COUNT(*) FROM warehouse.stock_movements \
                  WHERE tenant_id = $1",
-                &[ctx.tenant_id.as_uuid()],
-            )
-            .await
-            .unwrap()
-            .get(0);
-        count
-    })).await;
+                    &[ctx.tenant_id.as_uuid()],
+                )
+                .await
+                .unwrap()
+                .get(0);
+            count
+        })
+    })
+    .await;
     assert_eq!(
         count, 0,
         "no movements should exist for unauthorized request"
@@ -371,10 +387,7 @@ async fn rls_tenant_isolation() {
         sku: "BOLT-RLS".into(),
         quantity: BigDecimal::from(100),
     };
-    cmd_pipeline
-        .execute(&handler, &cmd, &ctx_a)
-        .await
-        .unwrap();
+    cmd_pipeline.execute(&handler, &cmd, &ctx_a).await.unwrap();
 
     // Tenant B queries same SKU → not found
     let ctx_b = operator_ctx(); // different tenant_id
@@ -455,7 +468,13 @@ async fn outbox_relay_delivers_event() {
     pipeline.execute(&cmd_handler, &cmd, &ctx).await.unwrap();
 
     // Run relay: single poll
-    let relay = db::OutboxRelay::new(pool.clone(), bus, Duration::from_millis(100), 10, tokio_util::sync::CancellationToken::new());
+    let relay = db::OutboxRelay::new(
+        pool.clone(),
+        bus,
+        Duration::from_millis(100),
+        10,
+        tokio_util::sync::CancellationToken::new(),
+    );
     let _ = relay.poll_and_publish().await;
 
     // Give async handler time to complete

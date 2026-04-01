@@ -60,39 +60,42 @@ async fn happy_path_create_product() {
     let product_id = result.product_id;
     let corr_id = ctx.correlation_id;
     let (sku, name, event_type, cmd_name) =
-        test_support::tenant_query(&pool, ctx.tenant_id, |client| Box::pin(async move {
-            let row = client
-                .query_one(
-                    "SELECT sku, name FROM catalog.products WHERE tenant_id = $1 AND id = $2",
-                    &[ctx.tenant_id.as_uuid(), &product_id],
-                )
-                .await
-                .unwrap();
-            let sku: String = row.get(0);
-            let name: String = row.get(1);
+        test_support::tenant_query(&pool, ctx.tenant_id, |client| {
+            Box::pin(async move {
+                let row = client
+                    .query_one(
+                        "SELECT sku, name FROM catalog.products WHERE tenant_id = $1 AND id = $2",
+                        &[ctx.tenant_id.as_uuid(), &product_id],
+                    )
+                    .await
+                    .unwrap();
+                let sku: String = row.get(0);
+                let name: String = row.get(1);
 
-            let outbox = client
-                .query_one(
-                    "SELECT event_type FROM common.outbox \
+                let outbox = client
+                    .query_one(
+                        "SELECT event_type FROM common.outbox \
                      WHERE tenant_id = $1 AND correlation_id = $2",
-                    &[ctx.tenant_id.as_uuid(), &corr_id],
-                )
-                .await
-                .unwrap();
-            let event_type: String = outbox.get(0);
+                        &[ctx.tenant_id.as_uuid(), &corr_id],
+                    )
+                    .await
+                    .unwrap();
+                let event_type: String = outbox.get(0);
 
-            let audit = client
-                .query_one(
-                    "SELECT command_name FROM common.audit_log \
+                let audit = client
+                    .query_one(
+                        "SELECT command_name FROM common.audit_log \
                      WHERE tenant_id = $1 AND correlation_id = $2",
-                    &[ctx.tenant_id.as_uuid(), &corr_id],
-                )
-                .await
-                .unwrap();
-            let cmd_name: String = audit.get(0);
+                        &[ctx.tenant_id.as_uuid(), &corr_id],
+                    )
+                    .await
+                    .unwrap();
+                let cmd_name: String = audit.get(0);
 
-            (sku, name, event_type, cmd_name)
-        })).await;
+                (sku, name, event_type, cmd_name)
+            })
+        })
+        .await;
 
     assert_eq!(sku, "BOLT-42");
     assert_eq!(name, "Болт М8");
@@ -395,31 +398,35 @@ async fn cross_context_product_projection() {
     pipeline.execute(&create_handler, &cmd, &ctx).await.unwrap();
 
     // 2. Run outbox relay → publish_and_wait → warehouse handler upserts projection
-    let relay = db::OutboxRelay::new(pool.clone(), bus, Duration::from_millis(100), 10, tokio_util::sync::CancellationToken::new());
+    let relay = db::OutboxRelay::new(
+        pool.clone(),
+        bus,
+        Duration::from_millis(100),
+        10,
+        tokio_util::sync::CancellationToken::new(),
+    );
     let _ = relay.poll_and_publish().await;
 
     // 3. Verify projection exists in warehouse schema
-    let name = test_support::tenant_query(&pool, ctx.tenant_id, |client| Box::pin(async move {
-        let row = client
-            .query_one(
-                "SELECT name FROM warehouse.product_projections \
+    let name = test_support::tenant_query(&pool, ctx.tenant_id, |client| {
+        Box::pin(async move {
+            let row = client
+                .query_one(
+                    "SELECT name FROM warehouse.product_projections \
                  WHERE tenant_id = $1 AND sku = $2",
-                &[ctx.tenant_id.as_uuid(), &"CROSS-BOLT"],
-            )
-            .await
-            .unwrap();
-        let name: String = row.get(0);
-        name
-    })).await;
+                    &[ctx.tenant_id.as_uuid(), &"CROSS-BOLT"],
+                )
+                .await
+                .unwrap();
+            let name: String = row.get(0);
+            name
+        })
+    })
+    .await;
     assert_eq!(name, "Болт кросс-контекст");
 
     // Cleanup cross-context tables + catalog tables
-    cleanup_tenant_rows(
-        &pool,
-        ctx.tenant_id,
-        &["warehouse.product_projections"],
-    )
-    .await;
+    cleanup_tenant_rows(&pool, ctx.tenant_id, &["warehouse.product_projections"]).await;
     cleanup_tenant(&pool, ctx.tenant_id).await;
 }
 
@@ -474,7 +481,13 @@ async fn get_balance_enriched_with_product_name() {
     pipeline.execute(&create_handler, &cmd, &ctx).await.unwrap();
 
     // 2. Relay → publish_and_wait → projection upserted
-    let relay = db::OutboxRelay::new(pool.clone(), bus, Duration::from_millis(100), 10, tokio_util::sync::CancellationToken::new());
+    let relay = db::OutboxRelay::new(
+        pool.clone(),
+        bus,
+        Duration::from_millis(100),
+        10,
+        tokio_util::sync::CancellationToken::new(),
+    );
     let _ = relay.poll_and_publish().await;
 
     // 3. Receive goods in warehouse (need new ctx for fresh correlation_id)

@@ -14,11 +14,10 @@ fn database_url() -> String {
 #[tokio::test]
 async fn next_value_returns_formatted_number() {
     let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
-    let client = pool.get().await.unwrap();
     let tenant = TenantId::new();
-
-    // Must be inside TX for FOR UPDATE.
+    let client = pool.get().await.unwrap();
     client.batch_execute("BEGIN").await.unwrap();
+    db::set_tenant_context(&**client, tenant).await.unwrap();
 
     let val = PgSequenceGenerator::next_value(&**client, tenant, "test_receipt", "ПРХ-")
         .await
@@ -39,32 +38,36 @@ async fn next_value_returns_formatted_number() {
 #[tokio::test]
 async fn different_tenants_independent() {
     let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
-    let client = pool.get().await.unwrap();
     let tenant_a = TenantId::new();
     let tenant_b = TenantId::new();
+    let client_a = pool.get().await.unwrap();
+    client_a.batch_execute("BEGIN").await.unwrap();
+    db::set_tenant_context(&**client_a, tenant_a).await.unwrap();
+    let client_b = pool.get().await.unwrap();
+    client_b.batch_execute("BEGIN").await.unwrap();
+    db::set_tenant_context(&**client_b, tenant_b).await.unwrap();
 
-    client.batch_execute("BEGIN").await.unwrap();
-
-    let a1 = PgSequenceGenerator::next_value(&**client, tenant_a, "test_indep", "A-")
+    let a1 = PgSequenceGenerator::next_value(&**client_a, tenant_a, "test_indep", "A-")
         .await
         .unwrap();
-    let b1 = PgSequenceGenerator::next_value(&**client, tenant_b, "test_indep", "B-")
+    let b1 = PgSequenceGenerator::next_value(&**client_b, tenant_b, "test_indep", "B-")
         .await
         .unwrap();
 
     assert_eq!(a1, "A-000001");
     assert_eq!(b1, "B-000001");
 
-    client.batch_execute("ROLLBACK").await.unwrap();
+    client_a.batch_execute("ROLLBACK").await.unwrap();
+    client_b.batch_execute("ROLLBACK").await.unwrap();
 }
 
 #[tokio::test]
 async fn different_seq_names_independent() {
     let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
-    let client = pool.get().await.unwrap();
     let tenant = TenantId::new();
-
+    let client = pool.get().await.unwrap();
     client.batch_execute("BEGIN").await.unwrap();
+    db::set_tenant_context(&**client, tenant).await.unwrap();
 
     let receipt = PgSequenceGenerator::next_value(&**client, tenant, "test_receipt2", "ПРХ-")
         .await
@@ -87,16 +90,21 @@ async fn concurrent_calls_gap_free() {
 
     // Pre-create the sequence so all concurrent tasks share the same one.
     {
-        let client = pool.get().await.unwrap();
-        client
-            .execute(
-                "INSERT INTO common.sequences (tenant_id, seq_name, prefix, next_value) \
-                 VALUES ($1, $2, $3, 1) \
-                 ON CONFLICT (tenant_id, seq_name) DO NOTHING",
-                &[tenant.as_uuid(), &seq_name, &"C-"],
-            )
-            .await
-            .unwrap();
+        db::with_tenant_write(&pool, tenant, |client| {
+            Box::pin(async move {
+                client
+                    .execute(
+                        "INSERT INTO common.sequences (tenant_id, seq_name, prefix, next_value) \
+                         VALUES ($1, $2, $3, 1) \
+                         ON CONFLICT (tenant_id, seq_name) DO NOTHING",
+                        &[tenant.as_uuid(), &seq_name, &"C-"],
+                    )
+                    .await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
     }
 
     // Spawn 10 tasks, each getting next_value inside its own TX.
@@ -107,6 +115,7 @@ async fn concurrent_calls_gap_free() {
         handles.push(tokio::spawn(async move {
             let client = pool.get().await.unwrap();
             client.batch_execute("BEGIN").await.unwrap();
+            db::set_tenant_context(&**client, tenant).await.unwrap();
             let val = PgSequenceGenerator::next_value(&**client, tenant, seq_name, "C-")
                 .await
                 .unwrap();
@@ -129,12 +138,17 @@ async fn concurrent_calls_gap_free() {
     );
 
     // Cleanup.
-    let client = pool.get().await.unwrap();
-    client
-        .execute(
-            "DELETE FROM common.sequences WHERE tenant_id = $1 AND seq_name = $2",
-            &[tenant.as_uuid(), &seq_name],
-        )
-        .await
-        .unwrap();
+    db::with_tenant_write(&pool, tenant, |client| {
+        Box::pin(async move {
+            client
+                .execute(
+                    "DELETE FROM common.sequences WHERE tenant_id = $1 AND seq_name = $2",
+                    &[tenant.as_uuid(), &seq_name],
+                )
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
 }

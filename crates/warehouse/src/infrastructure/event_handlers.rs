@@ -54,31 +54,26 @@ impl event_bus::traits::EventHandler for ProductCreatedHandler {
 
     async fn handle(&self, event: &Self::Event) -> Result<(), anyhow::Error> {
         let event = event.clone();
-        db::with_tenant_write(
-            &self.pool,
-            TenantId::from_uuid(event.tenant_id),
-            |client| {
-                Box::pin(async move {
-                    let repo =
-                        InventoryRepo::new(client, TenantId::from_uuid(event.tenant_id));
-                    repo.upsert_product_projection(
-                        event.product_id,
-                        &event.sku,
-                        &event.name,
-                        &event.category,
-                    )
-                    .await?;
+        db::with_tenant_write(&self.pool, TenantId::from_uuid(event.tenant_id), |client| {
+            Box::pin(async move {
+                let repo = InventoryRepo::new(client, TenantId::from_uuid(event.tenant_id));
+                repo.upsert_product_projection(
+                    event.product_id,
+                    &event.sku,
+                    &event.name,
+                    &event.category,
+                )
+                .await?;
 
-                    tracing::info!(
-                        sku = %event.sku,
-                        product_id = %event.product_id,
-                        "product projection upserted"
-                    );
+                tracing::info!(
+                    sku = %event.sku,
+                    product_id = %event.product_id,
+                    "product projection upserted"
+                );
 
-                    Ok(())
-                })
-            },
-        )
+                Ok(())
+            })
+        })
         .await
     }
 

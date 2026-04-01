@@ -243,7 +243,7 @@ sequenceDiagram
 
     P->>Handler: handle(query, ctx)
 
-    Note over Handler,DB: with_tenant_read(pool, tenant_id, closure)
+    Note over Handler,DB: ReadScope::acquire(pool, tenant_id) ... read.finish().await?
     Handler->>DB: BEGIN READ ONLY
     Handler->>DB: SET LOCAL app.tenant_id = '...'
     Handler->>DB: SELECT (clorinde, RLS applied)
@@ -310,7 +310,7 @@ graph LR
     end
 
     subgraph "Read Path"
-        R1["with_tenant_read()"]
+        R1["ReadScope::acquire()"]
         R2["BEGIN READ ONLY"]
         R3["SET LOCAL app.tenant_id"]
         R4["Handler SQL"]
@@ -343,6 +343,16 @@ graph LR
     style FORCE fill:#ffcdd2
     style NOFORCE fill:#fff9c4
 ```
+
+Read path contract:
+- `ReadScope::acquire()` открывает `BEGIN READ ONLY` и выставляет `SET LOCAL app.tenant_id`.
+- Handler обязан явно вызвать `read.finish().await?` после всех запросов.
+- `RecyclingMethod::Clean` в pool используется как defensive fallback cleanup, а не как основной happy path для завершения read TX.
+
+RLS consequence for infrastructure tables:
+- `common.audit_log`, `common.sequences`, `common.domain_history` находятся под `FORCE RLS`.
+- Raw SQL по этим таблицам без tenant context невалиден даже для owner (`erp_admin`).
+- Тесты, ad-hoc SQL и service code должны либо использовать tenant-scoped helpers (`ReadScope`, `with_tenant_write`, `PgUnitOfWork`), либо явно делать `BEGIN` + `SET LOCAL app.tenant_id`.
 
 ---
 
@@ -688,7 +698,7 @@ crates/{bc_name}/
 | Transactional outbox | Атомарность: бизнес-данные + events в одной TX |
 | Inbox dedup | At-least-once delivery + per-handler dedup; handler'ы должны быть идемпотентны (UPSERT) |
 | FORCE RLS | Owner подчиняется RLS на business + audit таблицах; outbox/dead_letters без FORCE (relay читает cross-tenant) |
-| Closure-based TX (`with_tenant_read/write`) | Невозможно забыть BEGIN/COMMIT |
+| Scoped read TX (`ReadScope`) + closure-based write TX (`with_tenant_write`) | Query path без `Box::pin`; read path требует явный `finish()`, write path по-прежнему auto-manages BEGIN/COMMIT |
 | Split impl для repos | Onion architecture без trait overhead |
 | BC-owned RBAC | Каждый BC декларирует свои роли/permissions |
 | UUID v7 | Time-ordered для лучшей производительности B-tree индексов |

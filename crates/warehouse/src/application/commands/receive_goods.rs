@@ -71,15 +71,14 @@ impl CommandHandler for ReceiveGoodsHandler {
         // 3-6. Repo operations (scoped to drop repo before db.record_change)
         let repo = InventoryRepo::new(db.client(), ctx.tenant_id);
 
-        let (item_id, old_balance) = if let Some((id, balance)) =
-            repo.find_by_sku(sku.as_str()).await?
-        {
-            (id, balance)
-        } else {
-            let new_id = EntityId::new();
-            repo.create_item(*new_id.as_uuid(), sku.as_str()).await?;
-            (*new_id.as_uuid(), BigDecimal::from(0))
-        };
+        let (item_id, old_balance) =
+            if let Some((id, balance)) = repo.find_by_sku(sku.as_str()).await? {
+                (id, balance)
+            } else {
+                let new_id = EntityId::new();
+                repo.create_item(*new_id.as_uuid(), sku.as_str()).await?;
+                (*new_id.as_uuid(), BigDecimal::from(0))
+            };
 
         // 4. Domain: item.receive()
         let old_balance_qty = Quantity::new(old_balance.clone()).internal("balance")?;

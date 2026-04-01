@@ -29,8 +29,9 @@ async fn pg_audit_log_writes_row() {
     audit.log(&ctx, "warehouse.receive_goods", &result).await;
 
     // Verify row exists.
-    let client = pool.get().await.unwrap();
-    let row = client
+    let read = db::ReadScope::acquire(&pool, ctx.tenant_id).await.unwrap();
+    let row = read
+        .client()
         .query_one(
             "SELECT command_name, correlation_id, user_id \
              FROM common.audit_log \
@@ -39,6 +40,7 @@ async fn pg_audit_log_writes_row() {
         )
         .await
         .unwrap();
+    read.finish().await.unwrap();
 
     let command_name: String = row.get(0);
     let correlation_id: Uuid = row.get(1);
@@ -49,13 +51,20 @@ async fn pg_audit_log_writes_row() {
     assert_eq!(user_id, *ctx.user_id.as_uuid());
 
     // Cleanup.
-    client
-        .execute(
-            "DELETE FROM common.audit_log WHERE correlation_id = $1",
-            &[&ctx.correlation_id],
-        )
-        .await
-        .unwrap();
+    let correlation_id = ctx.correlation_id;
+    db::with_tenant_write(&pool, ctx.tenant_id, |client| {
+        Box::pin(async move {
+            client
+                .execute(
+                    "DELETE FROM common.audit_log WHERE correlation_id = $1",
+                    &[&correlation_id],
+                )
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
 }
 
 // ─── DomainHistoryWriter ────────────────────────────────────────────────────
@@ -69,8 +78,12 @@ async fn domain_history_writer_records_change() {
     let old_state = serde_json::json!({"qty": 0});
     let new_state = serde_json::json!({"qty": 100});
 
-    // Use a direct connection (simulating inside-TX call).
+    // Use a tenant-scoped connection (simulating inside-TX call).
     let client = pool.get().await.unwrap();
+    client.batch_execute("BEGIN").await.unwrap();
+    db::set_tenant_context(&**client, ctx.tenant_id)
+        .await
+        .unwrap();
     let id = audit::DomainHistoryWriter::record(
         &**client,
         &ctx,
@@ -103,11 +116,7 @@ async fn domain_history_writer_records_change() {
     assert_eq!(event_type, "erp.warehouse.goods_received.v1");
     assert_eq!(correlation_id, ctx.correlation_id);
 
-    // Cleanup.
-    client
-        .execute("DELETE FROM common.domain_history WHERE id = $1", &[&id])
-        .await
-        .unwrap();
+    client.batch_execute("ROLLBACK").await.unwrap();
 }
 
 #[tokio::test]
@@ -118,6 +127,10 @@ async fn domain_history_writer_null_old_state() {
     let new_state = serde_json::json!({"name": "Bolt M8"});
 
     let client = pool.get().await.unwrap();
+    client.batch_execute("BEGIN").await.unwrap();
+    db::set_tenant_context(&**client, ctx.tenant_id)
+        .await
+        .unwrap();
     let id = audit::DomainHistoryWriter::record(
         &**client,
         &ctx,
@@ -131,9 +144,5 @@ async fn domain_history_writer_null_old_state() {
     .unwrap();
     assert!(id > 0);
 
-    // Cleanup.
-    client
-        .execute("DELETE FROM common.domain_history WHERE id = $1", &[&id])
-        .await
-        .unwrap();
+    client.batch_execute("ROLLBACK").await.unwrap();
 }
