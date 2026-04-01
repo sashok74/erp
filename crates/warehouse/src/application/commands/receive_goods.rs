@@ -3,8 +3,6 @@
 //! Полный canonical write path:
 //! validate → find/create item → receive → movement + balance → history → seq → outbox.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use bigdecimal::BigDecimal;
 use db::PgCommandContext;
@@ -15,9 +13,9 @@ use runtime::ports::UnitOfWork;
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::application::ports::InventoryRepo;
 use crate::domain::aggregates::InventoryItem;
 use crate::domain::value_objects::{Quantity, Sku};
-use crate::infrastructure::repos::PgInventoryRepo;
 
 /// Команда приёмки товара.
 #[derive(Debug)]
@@ -42,15 +40,13 @@ pub struct ReceiveGoodsResult {
 }
 
 /// Handler приёмки товара.
-pub struct ReceiveGoodsHandler {
-    #[allow(dead_code)]
-    pool: Arc<db::PgPool>,
-}
+#[derive(Default)]
+pub struct ReceiveGoodsHandler;
 
 impl ReceiveGoodsHandler {
     #[must_use]
-    pub fn new(pool: Arc<db::PgPool>) -> Self {
-        Self { pool }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -72,23 +68,16 @@ impl CommandHandler for ReceiveGoodsHandler {
         // 2. Downcast UoW → PgCommandContext
         let mut db = PgCommandContext::from_uow(uow)?;
 
-        // 3. Find or create InventoryItem
+        // 3-6. Repo operations (scoped to drop repo before db.record_change)
+        let repo = InventoryRepo::new(db.client(), ctx.tenant_id);
+
         let (item_id, old_balance) = if let Some((id, balance)) =
-            PgInventoryRepo::find_by_sku(db.client(), ctx.tenant_id, sku.as_str())
-                .await
-                .internal("find_by_sku")?
+            repo.find_by_sku(sku.as_str()).await?
         {
             (id, balance)
         } else {
             let new_id = EntityId::new();
-            PgInventoryRepo::create_item(
-                db.client(),
-                ctx.tenant_id,
-                *new_id.as_uuid(),
-                sku.as_str(),
-            )
-            .await
-            .internal("create_item")?;
+            repo.create_item(*new_id.as_uuid(), sku.as_str()).await?;
             (*new_id.as_uuid(), BigDecimal::from(0))
         };
 
@@ -112,9 +101,7 @@ impl CommandHandler for ReceiveGoodsHandler {
         let movement_id = Uuid::now_v7();
 
         // 6. Repo: save movement + upsert balance
-        PgInventoryRepo::save_movement(
-            db.client(),
-            ctx.tenant_id,
+        repo.save_movement(
             movement_id,
             item_id,
             "goods_received",
@@ -124,19 +111,10 @@ impl CommandHandler for ReceiveGoodsHandler {
             ctx.correlation_id,
             *ctx.user_id.as_uuid(),
         )
-        .await
-        .internal("save_movement")?;
+        .await?;
 
-        PgInventoryRepo::upsert_balance(
-            db.client(),
-            ctx.tenant_id,
-            item_id,
-            sku.as_str(),
-            &event.new_balance,
-            movement_id,
-        )
-        .await
-        .internal("upsert_balance")?;
+        repo.upsert_balance(item_id, sku.as_str(), &event.new_balance, movement_id)
+            .await?;
 
         // 7. Domain history: old → new state (deferred — flush в commit)
         let old_state = serde_json::json!({ "balance": old_balance.to_string() });

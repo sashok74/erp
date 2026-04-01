@@ -1,33 +1,21 @@
-//! `PgProductRepo` — SQL-доступ к каталогу товаров через `clorinde_gen`.
+//! Реализации persistence для `ProductRepo` через `clorinde_gen`.
+//!
+//! Split impl: struct определён в `application::ports`,
+//! методы реализованы здесь через clorinde SQL.
 
-use db::conversions::tid;
 use db::{repo_exec, repo_opt};
-use kernel::types::TenantId;
 use uuid::Uuid;
 
-/// Строка товара для query handler.
-#[derive(Debug)]
-pub struct ProductRow {
-    pub id: Uuid,
-    pub sku: String,
-    pub name: String,
-    pub category: String,
-    pub unit: String,
-}
+use crate::application::ports::{ProductRepo, ProductRow};
 
-/// Repository для товаров каталога.
-pub struct PgProductRepo;
-
-impl PgProductRepo {
+impl ProductRepo<'_> {
     repo_opt! {
         /// Найти товар по SKU.
         pub async fn find_by_sku(
-            client: &impl GenericClient,
-            tenant_id: TenantId,
             sku: &str,
         ) -> Option<ProductRow>
         via clorinde_gen::queries::catalog::products::find_by_sku;
-        bind = [&tid(tenant_id), &sku];
+        bind = [&sku];
         map = |r| {
             ProductRow {
                 id: r.id,
@@ -42,14 +30,12 @@ impl PgProductRepo {
     repo_exec! {
         /// Создать товар в каталоге.
         pub async fn create_product(
-            client: &impl GenericClient,
-            tenant_id: TenantId,
             id: Uuid,
             sku: &str,
             name: &str,
             category: &str,
             unit: &str,
         ) via clorinde_gen::queries::catalog::products::create_product;
-        bind = [&tid(tenant_id), &id, &sku, &name, &category, &unit];
+        bind = [&id, &sku, &name, &category, &unit];
     }
 }

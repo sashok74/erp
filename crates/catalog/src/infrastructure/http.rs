@@ -23,8 +23,7 @@ pub fn routes(
 ) -> Router {
     BcRouter::new(pipeline, query_pipeline)
         .command_with_status(&Method::POST, "/products", StatusCode::CREATED, {
-            let pool = pool.clone();
-            move || CreateProductHandler::new(pool.clone())
+            move || CreateProductHandler::new()
         })
         .query(&Method::GET, "/products", {
             move || GetProductHandler::new(pool.clone())

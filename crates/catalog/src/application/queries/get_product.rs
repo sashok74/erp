@@ -1,17 +1,16 @@
 //! `GetProductQuery` — запрос товара по SKU.
 //!
-//! Read-only, без транзакции. Использует `PgPool` напрямую.
+//! Read-only, внутри `BEGIN READ ONLY` + RLS.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use db::ReadDbContext;
-use kernel::{AppError, DomainError, IntoInternal, Query, RequestContext};
+use kernel::{AppError, DomainError, Query, RequestContext};
 use runtime::query_handler::QueryHandler;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::infrastructure::repos::PgProductRepo;
+use crate::application::ports::ProductRepo;
 
 /// Запрос товара по SKU.
 #[derive(Debug)]
@@ -57,24 +56,28 @@ impl QueryHandler for GetProductHandler {
         query: &Self::Query,
         ctx: &RequestContext,
     ) -> Result<Self::Result, AppError> {
-        let db = ReadDbContext::acquire(&self.pool, ctx).await?;
+        let tenant_id = ctx.tenant_id;
+        let sku = query.sku.clone();
 
-        let row = PgProductRepo::find_by_sku(db.client(), ctx.tenant_id, &query.sku)
-            .await
-            .internal("find_by_sku")?;
+        db::with_tenant_read(&self.pool, tenant_id, |client| {
+            Box::pin(async move {
+                let repo = ProductRepo::new(client, tenant_id);
+                let row = repo.find_by_sku(&sku).await?;
 
-        match row {
-            Some(r) => Ok(ProductResult {
-                product_id: r.id,
-                sku: r.sku,
-                name: r.name,
-                category: r.category,
-                unit: r.unit,
-            }),
-            None => Err(AppError::Domain(DomainError::NotFound(format!(
-                "Product with SKU '{}'",
-                query.sku
-            )))),
-        }
+                match row {
+                    Some(r) => Ok(ProductResult {
+                        product_id: r.id,
+                        sku: r.sku,
+                        name: r.name,
+                        category: r.category,
+                        unit: r.unit,
+                    }),
+                    None => Err(AppError::Domain(DomainError::NotFound(format!(
+                        "Product with SKU '{sku}'"
+                    )))),
+                }
+            })
+        })
+        .await
     }
 }

@@ -12,6 +12,7 @@ runtime = { workspace = true }
 event_bus = { workspace = true }
 bc_http = { workspace = true }
 db = { workspace = true }
+deadpool-postgres = { workspace = true }
 clorinde-gen = { workspace = true }
 audit = { workspace = true }
 seq_gen = { workspace = true }
@@ -28,5 +29,6 @@ axum = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 auth = { workspace = true }
 test_support = { workspace = true }

@@ -1,18 +1,17 @@
 //! `GetBalanceQuery` — запрос текущего баланса по SKU.
 //!
-//! Read-only, без транзакции. Использует `PgPool` напрямую.
+//! Read-only, внутри `BEGIN READ ONLY` + RLS.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use bigdecimal::BigDecimal;
-use db::ReadDbContext;
-use kernel::{AppError, IntoInternal, Query, RequestContext};
+use kernel::{AppError, Query, RequestContext};
 use runtime::query_handler::QueryHandler;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::infrastructure::repos::PgInventoryRepo;
+use crate::application::ports::InventoryRepo;
 
 /// Запрос баланса по SKU.
 #[derive(Debug)]
@@ -57,33 +56,32 @@ impl QueryHandler for GetBalanceHandler {
         query: &Self::Query,
         ctx: &RequestContext,
     ) -> Result<Self::Result, AppError> {
-        let db = ReadDbContext::acquire(&self.pool, ctx).await?;
+        let tenant_id = ctx.tenant_id;
+        let sku = query.sku.clone();
 
-        let row = PgInventoryRepo::get_balance(db.client(), ctx.tenant_id, &query.sku)
-            .await
-            .internal("get_balance")?;
+        db::with_tenant_read(&self.pool, tenant_id, |client| {
+            Box::pin(async move {
+                let repo = InventoryRepo::new(client, tenant_id);
+                let row = repo.get_balance(&sku).await?;
+                let projection = repo.get_product_projection(&sku).await?;
+                let product_name = projection.map(|p| p.name);
 
-        // Query product projection for name
-        let projection =
-            PgInventoryRepo::get_product_projection(db.client(), ctx.tenant_id, &query.sku)
-                .await
-                .internal("get_product_projection")?;
-
-        let product_name = projection.map(|p| p.name);
-
-        match row {
-            Some(r) => Ok(BalanceResult {
-                sku: r.sku,
-                balance: r.balance,
-                item_id: Some(r.item_id),
-                product_name,
-            }),
-            None => Ok(BalanceResult {
-                sku: query.sku.clone(),
-                balance: BigDecimal::from(0),
-                item_id: None,
-                product_name,
-            }),
-        }
+                match row {
+                    Some(r) => Ok(BalanceResult {
+                        sku: r.sku,
+                        balance: r.balance,
+                        item_id: Some(r.item_id),
+                        product_name,
+                    }),
+                    None => Ok(BalanceResult {
+                        sku,
+                        balance: BigDecimal::from(0),
+                        item_id: None,
+                        product_name,
+                    }),
+                }
+            })
+        })
+        .await
     }
 }

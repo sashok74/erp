@@ -3,21 +3,19 @@
 //! Полный canonical write path:
 //! validate VOs → check duplicate → create aggregate → persist → history → outbox.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use db::PgCommandContext;
 use kernel::types::EntityId;
-use kernel::{AppError, Command, IntoInternal, RequestContext};
+use kernel::{AppError, Command, RequestContext};
 use runtime::command_handler::CommandHandler;
 use runtime::ports::UnitOfWork;
 use serde::Serialize;
 use uuid::Uuid;
 
+use crate::application::ports::ProductRepo;
 use crate::domain::aggregates::Product;
 use crate::domain::errors::CatalogDomainError;
 use crate::domain::value_objects::{ProductName, Sku};
-use crate::infrastructure::repos::PgProductRepo;
 
 /// Команда создания товара.
 #[derive(Debug)]
@@ -41,15 +39,13 @@ pub struct CreateProductResult {
 }
 
 /// Handler создания товара.
-pub struct CreateProductHandler {
-    #[allow(dead_code)]
-    pool: Arc<db::PgPool>,
-}
+#[derive(Default)]
+pub struct CreateProductHandler;
 
 impl CreateProductHandler {
     #[must_use]
-    pub fn new(pool: Arc<db::PgPool>) -> Self {
-        Self { pool }
+    pub fn new() -> Self {
+        Self
     }
 }
 
@@ -70,13 +66,10 @@ impl CommandHandler for CreateProductHandler {
 
         // 2. Downcast UoW → PgCommandContext
         let mut db = PgCommandContext::from_uow(uow)?;
+        let repo = ProductRepo::new(db.client(), ctx.tenant_id);
 
         // 3. Check duplicate
-        if PgProductRepo::find_by_sku(db.client(), ctx.tenant_id, sku.as_str())
-            .await
-            .internal("find_by_sku")?
-            .is_some()
-        {
+        if repo.find_by_sku(sku.as_str()).await?.is_some() {
             return Err(CatalogDomainError::DuplicateSku(cmd.sku.clone()).into());
         }
 
@@ -92,17 +85,14 @@ impl CommandHandler for CreateProductHandler {
         );
 
         // 5. Persist
-        PgProductRepo::create_product(
-            db.client(),
-            ctx.tenant_id,
+        repo.create_product(
             *product_id.as_uuid(),
             sku.as_str(),
             product.name().as_str(),
             product.category(),
             product.unit(),
         )
-        .await
-        .internal("create_product")?;
+        .await?;
 
         // 6. Domain history (deferred — flush в commit)
         let new_state = serde_json::json!({

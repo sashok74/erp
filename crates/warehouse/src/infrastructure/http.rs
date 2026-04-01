@@ -23,8 +23,7 @@ pub fn routes(
 ) -> Router {
     BcRouter::new(pipeline, query_pipeline)
         .command(&Method::POST, "/receive", {
-            let pool = pool.clone();
-            move || ReceiveGoodsHandler::new(pool.clone())
+            move || ReceiveGoodsHandler::new()
         })
         .query(&Method::GET, "/balance", {
             move || GetBalanceHandler::new(pool.clone())
