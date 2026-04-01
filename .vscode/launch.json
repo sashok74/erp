@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug gateway",
+      "program": "${workspaceFolder}/target/debug/erp-gateway",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "DATABASE_URL": "postgres://erp_admin:vfrfh123@192.168.7.123:5432/erp_dev",
+        "JWT_SECRET": "erp-dev-secret-key-at-least-32-bytes!!",
+        "RUST_LOG": "info",
+        "DEV_MODE": "1"
+      },
+      "preLaunchTask": "cargo build gateway"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "erp-dev-pg": {
+      "type": "http",
+      "url": "http://URAN:8770/mcp"
+    }
+  }
+}
