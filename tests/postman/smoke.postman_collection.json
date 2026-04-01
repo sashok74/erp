@@ -1,0 +1,293 @@
+{
+  "info": {
+    "name": "ERP Smoke",
+    "description": "CI Smoke — health, critical auth path, cross-BC scenario, viewer grants.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "token", "value": "" },
+    { "key": "ci_sku", "value": "CI-BOLT-42" }
+  ],
+  "item": [
+    {
+      "name": "Health Check",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('health ok', function () { pm.expect(json.status).to.eql('ok'); });",
+              "pm.environment.set('ci_sku', 'CI-' + Date.now());"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{base_url}}/health", "host": ["{{base_url}}"], "path": ["health"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Readiness Check",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('ready', function () { pm.expect(json.status).to.eql('ready'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{base_url}}/ready", "host": ["{{base_url}}"], "path": ["ready"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Issue Token (catalog_manager)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('token exists', function () { pm.expect(json.token).to.be.a('string').and.not.empty; });",
+              "pm.environment.set('token', json.token);",
+              "pm.environment.set('tenant_id', json.tenant_id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"roles\": [\"catalog_manager\"]\n}" },
+        "url": { "raw": "{{base_url}}/dev/token", "host": ["{{base_url}}"], "path": ["dev", "token"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Create Product (CI SKU)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 201', function () { pm.response.to.have.status(201); });",
+              "var json = pm.response.json();",
+              "pm.test('product created', function () { pm.expect(json.product_id).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"{{ci_sku}}\",\n  \"name\": \"CI Bolt\",\n  \"category\": \"Метизы\",\n  \"unit\": \"шт\"\n}" },
+        "url": { "raw": "{{base_url}}/api/catalog/products", "host": ["{{base_url}}"], "path": ["api", "catalog", "products"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Get Product (CI SKU)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('product query ok', function () { pm.expect(json.sku).to.eql(pm.environment.get('ci_sku')); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/catalog/products?sku={{ci_sku}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "catalog", "products"],
+          "query": [{ "key": "sku", "value": "{{ci_sku}}" }]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Issue Token (warehouse_operator)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('token exists', function () { pm.expect(json.token).to.be.a('string').and.not.empty; });",
+              "pm.environment.set('token', json.token);",
+              "pm.environment.set('tenant_id', json.tenant_id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"roles\": [\"warehouse_operator\"]\n}" },
+        "url": { "raw": "{{base_url}}/dev/token", "host": ["{{base_url}}"], "path": ["dev", "token"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Receive Goods (CI SKU)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('receive ok', function () { pm.expect(json.new_balance).to.exist; pm.expect(json.doc_number).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"{{ci_sku}}\",\n  \"quantity\": 25\n}" },
+        "url": { "raw": "{{base_url}}/api/warehouse/receive", "host": ["{{base_url}}"], "path": ["api", "warehouse", "receive"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Get Balance (CI SKU)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('balance query ok', function () { pm.expect(json.sku).to.eql(pm.environment.get('ci_sku')); pm.expect(json.balance).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/warehouse/balance?sku={{ci_sku}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "warehouse", "balance"],
+          "query": [{ "key": "sku", "value": "{{ci_sku}}" }]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Issue Token (viewer)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('token exists', function () { pm.expect(json.token).to.be.a('string').and.not.empty; });",
+              "pm.environment.set('token', json.token);",
+              "pm.environment.set('tenant_id', json.tenant_id);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"roles\": [\"viewer\"]\n}" },
+        "url": { "raw": "{{base_url}}/dev/token", "host": ["{{base_url}}"], "path": ["dev", "token"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Viewer Get Product (CI SKU)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('viewer catalog query ok', function () { pm.expect(json.sku).to.eql(pm.environment.get('ci_sku')); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/catalog/products?sku={{ci_sku}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "catalog", "products"],
+          "query": [{ "key": "sku", "value": "{{ci_sku}}" }]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Viewer Get Balance (CI SKU)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('viewer warehouse query ok', function () { pm.expect(json.sku).to.eql(pm.environment.get('ci_sku')); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/warehouse/balance?sku={{ci_sku}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "warehouse", "balance"],
+          "query": [{ "key": "sku", "value": "{{ci_sku}}" }]
+        }
+      },
+      "response": []
+    }
+  ]
+}

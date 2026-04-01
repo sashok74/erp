@@ -88,9 +88,10 @@ async fn happy_path_receive_goods() {
 
 - не дублировать `static POOL` или `OnceCell` в каждом BC
 - не дублировать один и тот же `database_url()` helper по файлам
-- не собирать `CommandPipeline` вручную без причины
+- не собирать `CommandPipeline` или `QueryPipeline` вручную без причины
 - не делать cleanup через копипаст SQL в каждом тестовом файле
 - не смешивать несколько стилей test harness в одном crate
+- **не класть тесты в файлы с production-кодом** (`src/*.rs`) — тесты живут в `tests/`. Исключение: unit-тесты доменных модулей (`#[cfg(test)] mod tests` в `domain/*.rs`) и unit-тесты library crates (`auth`, `runtime` и т.д.), которые проверяют внутренние контракты без внешних зависимостей
 
 ## Когда можно отступить
 
@@ -102,9 +103,31 @@ async fn happy_path_receive_goods() {
 
 Даже в этом случае нужно переиспользовать `shared_pool`, `request_context` и `cleanup_tenant` настолько, насколько это возможно.
 
+## Gateway и другие non-BC crates
+
+Gateway — binary crate (composition root), не Bounded Context. Его тесты тоже живут в `tests/`, а не в `src/main.rs`:
+
+- `crates/gateway/tests/dev_token.rs` — тесты dev endpoints
+- `crates/gateway/tests/` — будущие e2e / smoke тесты
+
+Для тестирования HTTP endpoints gateway использует `tower::ServiceExt::oneshot` — собирает Router с нужным State и отправляет запросы без поднятия сервера.
+
+Если endpoint-у нужен internal state (например `DevTokenState`), логику endpoint выносим в отдельный модуль (`dev_endpoints.rs`) с `pub(crate)` видимостью. Тесты внутри этого модуля (`#[cfg(test)] mod tests`) допустимы как unit-тесты, потому что они проверяют HTTP-поведение endpoint'а изолированно.
+
+Общее правило для всех crates (BC и non-BC):
+
+| Тип теста | Где живёт |
+|-----------|-----------|
+| Unit-тест доменной логики | `#[cfg(test)] mod tests` в `src/domain/*.rs` |
+| Unit-тест library crate (trait contracts, registry, checker) | `#[cfg(test)] mod tests` в `src/*.rs` этого crate |
+| Unit-тест HTTP endpoint (Router + oneshot, без БД) | `#[cfg(test)] mod tests` в модуле endpoint'а |
+| Integration-тест BC (с БД) | `crates/<bc>/tests/integration.rs` |
+| Integration/e2e-тест gateway (с БД) | `crates/gateway/tests/*.rs` |
+
 ## Текущее состояние
 
-Сейчас этому шаблону уже следуют:
+Сейчас этому шаблону следуют:
 
 - [`crates/catalog/tests/integration.rs`](/home/raa/RustProjects/erp/crates/catalog/tests/integration.rs)
 - [`crates/warehouse/tests/integration.rs`](/home/raa/RustProjects/erp/crates/warehouse/tests/integration.rs)
+- [`crates/gateway/src/dev_endpoints.rs`](/home/raa/RustProjects/erp/crates/gateway/src/dev_endpoints.rs) — unit-тесты dev token endpoint

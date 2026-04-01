@@ -1,0 +1,468 @@
+{
+  "info": {
+    "name": "ERP Warehouse",
+    "description": "Warehouse BC — full regression suite.\nSelf-contained: own auth setup, happy path, negative cases, viewer matrix.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "token", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth Setup (warehouse_operator)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('token exists', function () { pm.expect(json.token).to.be.a('string').and.not.empty; });",
+              "pm.environment.set('token', json.token);",
+              "pm.environment.set('tenant_id', json.tenant_id);",
+              "pm.environment.set('wh_sku', 'WH-' + Date.now());"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"roles\": [\"warehouse_operator\"]\n}" },
+        "url": { "raw": "{{base_url}}/dev/token", "host": ["{{base_url}}"], "path": ["dev", "token"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Receive Goods",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('receive payload', function () { pm.expect(json.item_id).to.exist; pm.expect(json.new_balance).to.exist; pm.expect(json.doc_number).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"{{wh_sku}}\",\n  \"quantity\": 100\n}" },
+        "url": { "raw": "{{base_url}}/api/warehouse/receive", "host": ["{{base_url}}"], "path": ["api", "warehouse", "receive"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Receive Goods (second batch)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('cumulative receive', function () { pm.expect(json.new_balance).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"{{wh_sku}}\",\n  \"quantity\": 50\n}" },
+        "url": { "raw": "{{base_url}}/api/warehouse/receive", "host": ["{{base_url}}"], "path": ["api", "warehouse", "receive"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Get Balance",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('balance payload', function () { pm.expect(json.balance).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/warehouse/balance?sku={{wh_sku}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "warehouse", "balance"],
+          "query": [{ "key": "sku", "value": "{{wh_sku}}" }]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Get Balance (non-existent SKU) → empty",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('zero balance', function () { pm.expect(json.balance).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/warehouse/balance?sku=DOES-NOT-EXIST",
+          "host": ["{{base_url}}"],
+          "path": ["api", "warehouse", "balance"],
+          "query": [{ "key": "sku", "value": "DOES-NOT-EXIST" }]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Receive without auth → 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 401', function () { pm.response.to.have.status(401); });",
+              "var json = pm.response.json();",
+              "pm.test('unauthorized code', function () { pm.expect(json.error.code).to.eql('UNAUTHORIZED'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"NO-AUTH\",\n  \"quantity\": 100\n}" },
+        "url": { "raw": "{{base_url}}/api/warehouse/receive", "host": ["{{base_url}}"], "path": ["api", "warehouse", "receive"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Receive with invalid token → 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 401', function () { pm.response.to.have.status(401); });",
+              "var json = pm.response.json();",
+              "pm.test('unauthorized code', function () { pm.expect(json.error.code).to.eql('UNAUTHORIZED'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer invalid.token.here" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"BAD-TOKEN\",\n  \"quantity\": 100\n}" },
+        "url": { "raw": "{{base_url}}/api/warehouse/receive", "host": ["{{base_url}}"], "path": ["api", "warehouse", "receive"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Auth Setup (catalog_manager → foreign role)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.environment.set('token', json.token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"roles\": [\"catalog_manager\"]\n}" },
+        "url": { "raw": "{{base_url}}/dev/token", "host": ["{{base_url}}"], "path": ["dev", "token"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Receive with foreign role → 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 401', function () { pm.response.to.have.status(401); });",
+              "var json = pm.response.json();",
+              "pm.test('unauthorized code', function () { pm.expect(json.error.code).to.eql('UNAUTHORIZED'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"FOREIGN-ROLE\",\n  \"quantity\": 10\n}" },
+        "url": { "raw": "{{base_url}}/api/warehouse/receive", "host": ["{{base_url}}"], "path": ["api", "warehouse", "receive"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Auth Setup (warehouse_operator → validation)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.environment.set('token', json.token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"roles\": [\"warehouse_operator\"]\n}" },
+        "url": { "raw": "{{base_url}}/dev/token", "host": ["{{base_url}}"], "path": ["dev", "token"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Receive with empty SKU → 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 400', function () { pm.response.to.have.status(400); });",
+              "var json = pm.response.json();",
+              "pm.test('validation code', function () { pm.expect(json.error.code).to.eql('VALIDATION_ERROR'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"\",\n  \"quantity\": 100\n}" },
+        "url": { "raw": "{{base_url}}/api/warehouse/receive", "host": ["{{base_url}}"], "path": ["api", "warehouse", "receive"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Receive with zero quantity → 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 400', function () { pm.response.to.have.status(400); });",
+              "var json = pm.response.json();",
+              "pm.test('validation code', function () { pm.expect(json.error.code).to.eql('VALIDATION_ERROR'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"BOLT-42\",\n  \"quantity\": 0\n}" },
+        "url": { "raw": "{{base_url}}/api/warehouse/receive", "host": ["{{base_url}}"], "path": ["api", "warehouse", "receive"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Receive with negative quantity → 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 400', function () { pm.response.to.have.status(400); });",
+              "var json = pm.response.json();",
+              "pm.test('validation code', function () { pm.expect(json.error.code).to.eql('VALIDATION_ERROR'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"BOLT-42\",\n  \"quantity\": -10\n}" },
+        "url": { "raw": "{{base_url}}/api/warehouse/receive", "host": ["{{base_url}}"], "path": ["api", "warehouse", "receive"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Auth Setup (admin)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.environment.set('token', json.token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"roles\": [\"admin\"]\n}" },
+        "url": { "raw": "{{base_url}}/dev/token", "host": ["{{base_url}}"], "path": ["dev", "token"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Admin receive goods → 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('admin allowed', function () { pm.expect(json.new_balance).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"ADMIN-WH-{{$timestamp}}\",\n  \"quantity\": 10\n}" },
+        "url": { "raw": "{{base_url}}/api/warehouse/receive", "host": ["{{base_url}}"], "path": ["api", "warehouse", "receive"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Auth Setup (viewer)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.environment.set('token', json.token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"roles\": [\"viewer\"]\n}" },
+        "url": { "raw": "{{base_url}}/dev/token", "host": ["{{base_url}}"], "path": ["dev", "token"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Viewer get balance → 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('viewer can read', function () { pm.expect(json.balance).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/warehouse/balance?sku={{wh_sku}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "warehouse", "balance"],
+          "query": [{ "key": "sku", "value": "{{wh_sku}}" }]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Viewer receive goods → 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 401', function () { pm.response.to.have.status(401); });",
+              "var json = pm.response.json();",
+              "pm.test('viewer cannot write', function () { pm.expect(json.error.code).to.eql('UNAUTHORIZED'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"VIEWER-DENY\",\n  \"quantity\": 5\n}" },
+        "url": { "raw": "{{base_url}}/api/warehouse/receive", "host": ["{{base_url}}"], "path": ["api", "warehouse", "receive"] }
+      },
+      "response": []
+    }
+  ]
+}

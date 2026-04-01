@@ -1,0 +1,392 @@
+{
+  "info": {
+    "name": "ERP Catalog",
+    "description": "Catalog BC — full regression suite.\nSelf-contained: own auth setup, happy path, negative cases, viewer matrix.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "token", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth Setup (catalog_manager)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('token exists', function () { pm.expect(json.token).to.be.a('string').and.not.empty; });",
+              "pm.environment.set('token', json.token);",
+              "pm.environment.set('tenant_id', json.tenant_id);",
+              "var suffix = Date.now();",
+              "pm.environment.set('catalog_sku_1', 'CAT-' + suffix + '-A');",
+              "pm.environment.set('catalog_sku_2', 'CAT-' + suffix + '-B');"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"roles\": [\"catalog_manager\"]\n}" },
+        "url": { "raw": "{{base_url}}/dev/token", "host": ["{{base_url}}"], "path": ["dev", "token"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Create Product (SKU 1)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 201', function () { pm.response.to.have.status(201); });",
+              "var json = pm.response.json();",
+              "pm.test('product created', function () { pm.expect(json.product_id).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"{{catalog_sku_1}}\",\n  \"name\": \"Болт М8\",\n  \"category\": \"Метизы\",\n  \"unit\": \"шт\"\n}" },
+        "url": { "raw": "{{base_url}}/api/catalog/products", "host": ["{{base_url}}"], "path": ["api", "catalog", "products"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Create Product (SKU 2)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 201', function () { pm.response.to.have.status(201); });",
+              "var json = pm.response.json();",
+              "pm.test('product created', function () { pm.expect(json.product_id).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"{{catalog_sku_2}}\",\n  \"name\": \"Гайка М7\",\n  \"category\": \"Метизы\",\n  \"unit\": \"шт\"\n}" },
+        "url": { "raw": "{{base_url}}/api/catalog/products", "host": ["{{base_url}}"], "path": ["api", "catalog", "products"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Get Product (SKU 1)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('product payload', function () { pm.expect(json.sku).to.eql(pm.environment.get('catalog_sku_1')); pm.expect(json.name).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/catalog/products?sku={{catalog_sku_1}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "catalog", "products"],
+          "query": [{ "key": "sku", "value": "{{catalog_sku_1}}" }]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Create without auth → 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 401', function () { pm.response.to.have.status(401); });",
+              "var json = pm.response.json();",
+              "pm.test('unauthorized code', function () { pm.expect(json.error.code).to.eql('UNAUTHORIZED'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"NO-AUTH\",\n  \"name\": \"Test\",\n  \"category\": \"Test\",\n  \"unit\": \"шт\"\n}" },
+        "url": { "raw": "{{base_url}}/api/catalog/products", "host": ["{{base_url}}"], "path": ["api", "catalog", "products"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Auth Setup (warehouse_operator → foreign role)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.environment.set('token', json.token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"roles\": [\"warehouse_operator\"]\n}" },
+        "url": { "raw": "{{base_url}}/dev/token", "host": ["{{base_url}}"], "path": ["dev", "token"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Create with foreign role → 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 401', function () { pm.response.to.have.status(401); });",
+              "var json = pm.response.json();",
+              "pm.test('unauthorized code', function () { pm.expect(json.error.code).to.eql('UNAUTHORIZED'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"FOREIGN-ROLE\",\n  \"name\": \"Test\",\n  \"category\": \"Test\",\n  \"unit\": \"шт\"\n}" },
+        "url": { "raw": "{{base_url}}/api/catalog/products", "host": ["{{base_url}}"], "path": ["api", "catalog", "products"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Auth Setup (catalog_manager → validation)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.environment.set('token', json.token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"roles\": [\"catalog_manager\"]\n}" },
+        "url": { "raw": "{{base_url}}/dev/token", "host": ["{{base_url}}"], "path": ["dev", "token"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Create with empty SKU → 400",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 400', function () { pm.response.to.have.status(400); });",
+              "var json = pm.response.json();",
+              "pm.test('validation code', function () { pm.expect(json.error.code).to.eql('VALIDATION_ERROR'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"\",\n  \"name\": \"Invalid product\",\n  \"category\": \"Test\",\n  \"unit\": \"шт\"\n}" },
+        "url": { "raw": "{{base_url}}/api/catalog/products", "host": ["{{base_url}}"], "path": ["api", "catalog", "products"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Auth Setup (admin)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.environment.set('token', json.token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"roles\": [\"admin\"]\n}" },
+        "url": { "raw": "{{base_url}}/dev/token", "host": ["{{base_url}}"], "path": ["dev", "token"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Admin create product → 201",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 201', function () { pm.response.to.have.status(201); });",
+              "var json = pm.response.json();",
+              "pm.test('admin allowed', function () { pm.expect(json.product_id).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"ADMIN-{{$timestamp}}\",\n  \"name\": \"Admin product\",\n  \"category\": \"Test\",\n  \"unit\": \"шт\"\n}" },
+        "url": { "raw": "{{base_url}}/api/catalog/products", "host": ["{{base_url}}"], "path": ["api", "catalog", "products"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Auth Setup (viewer)",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.environment.set('token', json.token);"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": { "mode": "raw", "raw": "{\n  \"tenant_id\": \"{{tenant_id}}\",\n  \"roles\": [\"viewer\"]\n}" },
+        "url": { "raw": "{{base_url}}/dev/token", "host": ["{{base_url}}"], "path": ["dev", "token"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Viewer get product → 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', function () { pm.response.to.have.status(200); });",
+              "var json = pm.response.json();",
+              "pm.test('viewer can read', function () { pm.expect(json.sku).to.exist; });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/catalog/products?sku={{catalog_sku_1}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "catalog", "products"],
+          "query": [{ "key": "sku", "value": "{{catalog_sku_1}}" }]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Viewer create product → 401",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 401', function () { pm.response.to.have.status(401); });",
+              "var json = pm.response.json();",
+              "pm.test('viewer cannot write', function () { pm.expect(json.error.code).to.eql('UNAUTHORIZED'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}" },
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"sku\": \"VIEWER-DENY\",\n  \"name\": \"Deny\",\n  \"category\": \"Test\",\n  \"unit\": \"шт\"\n}" },
+        "url": { "raw": "{{base_url}}/api/catalog/products", "host": ["{{base_url}}"], "path": ["api", "catalog", "products"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Get non-existent product → empty/not found",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 404', function () { pm.response.to.have.status(404); });",
+              "var json = pm.response.json();",
+              "pm.test('not found code', function () { pm.expect(json.error.code).to.eql('NOT_FOUND'); });"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+        "url": {
+          "raw": "{{base_url}}/api/catalog/products?sku=DOES-NOT-EXIST-{{$timestamp}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "catalog", "products"],
+          "query": [{ "key": "sku", "value": "DOES-NOT-EXIST-{{$timestamp}}" }]
+        }
+      },
+      "response": []
+    }
+  ]
+}
