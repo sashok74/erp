@@ -1,16 +1,16 @@
-//! JWT issue/verify сервис.
+//! JWT issue/verify service.
 //!
-//! Использует HS256 (symmetric key). Для production рекомендуется
-//! RS256/ES256, но HS256 достаточен для modular monolith.
+//! Uses HS256 (symmetric key). For production consider RS256/ES256,
+//! but HS256 is sufficient for a modular monolith.
 
 use chrono::Duration;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use kernel::AppError;
 use kernel::types::{TenantId, UserId};
 
-use crate::claims::{Claims, Role};
+use crate::claims::Claims;
 
-/// Сервис выдачи и проверки JWT токенов.
+/// JWT token issue/verify service.
 pub struct JwtService {
     encoding_key: EncodingKey,
     decoding_key: DecodingKey,
@@ -18,7 +18,7 @@ pub struct JwtService {
 }
 
 impl JwtService {
-    /// Создать сервис с симметричным ключом и временем жизни токена.
+    /// Create service with a symmetric key and token TTL.
     #[must_use]
     pub fn new(secret: &str, token_ttl: Duration) -> Self {
         Self {
@@ -28,16 +28,16 @@ impl JwtService {
         }
     }
 
-    /// Выдать JWT токен для пользователя.
+    /// Issue a JWT token for a user.
     ///
     /// # Errors
     ///
-    /// `AppError::Internal` если не удалось сериализовать/подписать токен.
+    /// `AppError::Internal` if serialization/signing fails.
     pub fn issue(
         &self,
         user_id: &UserId,
         tenant_id: &TenantId,
-        roles: Vec<Role>,
+        roles: Vec<String>,
     ) -> Result<String, AppError> {
         let now = chrono::Utc::now();
         let exp = now + self.token_ttl;
@@ -56,11 +56,11 @@ impl JwtService {
             .map_err(|e| AppError::Internal(format!("JWT encode error: {e}")))
     }
 
-    /// Проверить и декодировать JWT токен.
+    /// Verify and decode a JWT token.
     ///
     /// # Errors
     ///
-    /// `AppError::Unauthorized` если токен невалидный, истёк или подпись не совпадает.
+    /// `AppError::Unauthorized` if the token is invalid, expired, or the signature doesn't match.
     pub fn verify(&self, token: &str) -> Result<Claims, AppError> {
         let token_data = decode::<Claims>(token, &self.decoding_key, &Validation::default())
             .map_err(|e| AppError::Unauthorized(format!("invalid token: {e}")))?;
@@ -81,7 +81,7 @@ mod tests {
         let svc = test_service();
         let user_id = UserId::new();
         let tenant_id = TenantId::new();
-        let roles = vec![Role::Admin, Role::WarehouseOperator];
+        let roles = vec!["admin".to_string(), "warehouse_operator".to_string()];
 
         let token = svc.issue(&user_id, &tenant_id, roles.clone()).unwrap();
         let claims = svc.verify(&token).unwrap();
@@ -104,7 +104,7 @@ mod tests {
         let svc2 = JwtService::new("secret-two-must-be-long-enough!!", Duration::hours(1));
 
         let token = svc1
-            .issue(&UserId::new(), &TenantId::new(), vec![Role::Viewer])
+            .issue(&UserId::new(), &TenantId::new(), vec!["viewer".to_string()])
             .unwrap();
 
         let err = svc2.verify(&token).unwrap_err();
@@ -113,7 +113,6 @@ mod tests {
 
     #[test]
     fn verify_expired_token_returns_unauthorized() {
-        // TTL = -1 hour → token already expired
         let svc = JwtService::new("test-secret-key-at-least-32-bytes!", Duration::hours(-1));
 
         let token = svc.issue(&UserId::new(), &TenantId::new(), vec![]).unwrap();

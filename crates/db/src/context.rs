@@ -116,4 +116,3 @@ impl<'a> PgCommandContext<'a> {
         Ok(())
     }
 }
-

@@ -100,9 +100,7 @@ mod tests {
                 },
             ],
         };
-        Arc::new(
-            PermissionRegistry::from_manifests_validated(vec![wh]).unwrap(),
-        )
+        Arc::new(PermissionRegistry::from_manifests_validated(vec![wh]).unwrap())
     }
 
     fn ctx_with_roles(roles: &[&str]) -> RequestContext {

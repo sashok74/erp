@@ -1,8 +1,8 @@
-//! Axum middleware для JWT-аутентификации и маппинг `AppError` → HTTP response.
+//! Axum middleware for JWT authentication and `AppError` -> HTTP response mapping.
 //!
-//! `auth_middleware` извлекает Bearer token из Authorization header,
-//! верифицирует через `JwtService`, конвертирует в `RequestContext`
-//! и кладёт в request extensions.
+//! `auth_middleware` extracts Bearer token from Authorization header,
+//! verifies via `JwtService`, converts to `RequestContext`
+//! and stores in request extensions.
 
 use std::sync::Arc;
 
@@ -15,8 +15,8 @@ use kernel::errors::{AppError, DomainError};
 
 use crate::jwt::JwtService;
 
-/// Newtype-обёртка для обхода orphan rule: `AppError` определён в kernel,
-/// а `IntoResponse` — в axum. Обёртка позволяет реализовать trait в auth crate.
+/// Newtype wrapper for orphan rule: `AppError` is in kernel,
+/// `IntoResponse` is in axum. Wrapper allows implementing the trait here.
 pub struct AppErrorResponse(pub AppError);
 
 impl From<AppError> for AppErrorResponse {
@@ -53,11 +53,11 @@ impl IntoResponse for AppErrorResponse {
     }
 }
 
-/// Axum middleware: извлечение JWT → `RequestContext` в extensions.
+/// Axum middleware: extract JWT -> `RequestContext` in extensions.
 ///
 /// # Errors
 ///
-/// Возвращает 401 если нет header'а, токен невалидный или claims некорректны.
+/// Returns 401 if no header, token is invalid, or claims are malformed.
 pub async fn auth_middleware(
     request: Request<Body>,
     next: Next,
@@ -97,7 +97,6 @@ pub async fn auth_middleware(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::claims::Role;
     use axum::Router;
     use axum::body::Body;
     use axum::http::Request;
@@ -144,7 +143,7 @@ mod tests {
         let user_id = UserId::new();
         let tenant_id = TenantId::new();
         let token = jwt_svc
-            .issue(&user_id, &tenant_id, vec![Role::Admin])
+            .issue(&user_id, &tenant_id, vec!["admin".to_string()])
             .unwrap();
 
         let app = make_app(jwt_svc);
@@ -196,27 +195,27 @@ mod tests {
 
     #[tokio::test]
     async fn app_error_status_code_mapping() {
-        // Unauthorized → 401
+        // Unauthorized -> 401
         let resp = AppErrorResponse(AppError::Unauthorized("no".to_string())).into_response();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-        // Validation → 400
+        // Validation -> 400
         let resp = AppErrorResponse(AppError::Validation("bad input".to_string())).into_response();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
-        // NotFound → 404
+        // NotFound -> 404
         let resp = AppErrorResponse(AppError::Domain(DomainError::NotFound("item".to_string())))
             .into_response();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-        // BusinessRule → 422
+        // BusinessRule -> 422
         let resp = AppErrorResponse(AppError::Domain(DomainError::BusinessRule(
             "rule".to_string(),
         )))
         .into_response();
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-        // InsufficientStock → 422
+        // InsufficientStock -> 422
         let resp = AppErrorResponse(AppError::Domain(DomainError::InsufficientStock {
             required: "10".to_string(),
             available: "3".to_string(),
@@ -224,7 +223,7 @@ mod tests {
         .into_response();
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-        // Internal → 500
+        // Internal -> 500
         let resp = AppErrorResponse(AppError::Internal("db down".to_string())).into_response();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }

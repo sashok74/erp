@@ -25,3 +25,19 @@ WHERE id = :id;
 UPDATE common.outbox
 SET retry_count = retry_count + 1
 WHERE id = :id;
+
+--! move_to_dlq
+INSERT INTO common.dead_letters
+    (event_id, event_type, source, tenant_id, payload,
+     correlation_id, causation_id, user_id,
+     original_created_at, retry_count, last_error)
+SELECT event_id, event_type, source, tenant_id, payload,
+       correlation_id, causation_id, user_id,
+       created_at, retry_count, :last_error
+FROM common.outbox
+WHERE id = :id;
+
+--! mark_dlq
+UPDATE common.outbox
+SET published = true, published_at = NOW()
+WHERE id = :id;

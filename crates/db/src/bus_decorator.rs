@@ -7,9 +7,9 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use event_bus::EventEnvelope;
 use event_bus::registry::ErasedEventHandler;
 use event_bus::traits::EventBus;
-use event_bus::EventEnvelope;
 use tokio::sync::RwLock;
 
 use crate::inbox::{InboxAwareHandler, InboxGuard};

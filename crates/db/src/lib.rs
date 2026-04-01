@@ -24,9 +24,9 @@ pub use transport::DecStr;
 
 pub use bus_decorator::InboxBusDecorator;
 pub use context::PgCommandContext;
-pub use scoped::{ReadScope, with_tenant_write};
 pub use inbox::InboxGuard;
 pub use pool::PgPool;
 pub use relay::OutboxRelay;
 pub use rls::set_tenant_context;
+pub use scoped::{ReadScope, with_tenant_write};
 pub use uow::{PgUnitOfWork, PgUnitOfWorkFactory};

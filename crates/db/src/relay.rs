@@ -10,7 +10,8 @@ use chrono::Utc;
 use event_bus::EventEnvelope;
 use event_bus::traits::EventBus;
 use kernel::types::{TenantId, UserId};
-use tracing::{debug, error, warn};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 use crate::pool::PgPool;
 
@@ -26,6 +27,7 @@ pub struct OutboxRelay {
     bus: Arc<dyn EventBus>,
     poll_interval: Duration,
     batch_size: i64,
+    cancel: CancellationToken,
 }
 
 impl OutboxRelay {
@@ -36,16 +38,18 @@ impl OutboxRelay {
         bus: Arc<dyn EventBus>,
         poll_interval: Duration,
         batch_size: i64,
+        cancel: CancellationToken,
     ) -> Self {
         Self {
             pool,
             bus,
             poll_interval,
             batch_size,
+            cancel,
         }
     }
 
-    /// Бесконечный loop: poll → publish → sleep. Вызывать через `tokio::spawn`.
+    /// Цикл: poll → publish → sleep. Завершается при отмене `CancellationToken`.
     ///
     /// # Errors
     ///
@@ -62,7 +66,13 @@ impl OutboxRelay {
                     error!(error = %e, "outbox relay poll failed");
                 }
             }
-            tokio::time::sleep(self.poll_interval).await;
+            tokio::select! {
+                () = tokio::time::sleep(self.poll_interval) => {}
+                () = self.cancel.cancelled() => {
+                    info!("outbox relay shutting down");
+                    return Ok(());
+                }
+            }
         }
     }
 
@@ -86,9 +96,10 @@ impl OutboxRelay {
         let mut published_count = 0;
 
         for row in &rows {
-            // Skip entries that have exceeded max retries (clorinde query
-            // does not filter by retry_count, so we check here).
+            // Events that exceeded max retries → move to dead letter queue.
             if row.retry_count >= MAX_RETRIES {
+                self.move_to_dlq(&client, row, "max retries exceeded")
+                    .await?;
                 continue;
             }
 
@@ -112,14 +123,20 @@ impl OutboxRelay {
                     published_count += 1;
                 }
                 Err(e) => {
-                    warn!(
-                        event_id = %row.event_id,
-                        error = %e,
-                        "outbox publish failed, incrementing retry"
-                    );
-                    clorinde_gen::queries::common::outbox::increment_retry()
-                        .bind(&client, &row.id)
-                        .await?;
+                    let new_retry = row.retry_count + 1;
+                    if new_retry >= MAX_RETRIES {
+                        self.move_to_dlq(&client, row, &e.to_string()).await?;
+                    } else {
+                        warn!(
+                            event_id = %row.event_id,
+                            retry = new_retry,
+                            error = %e,
+                            "outbox publish failed, incrementing retry"
+                        );
+                        clorinde_gen::queries::common::outbox::increment_retry()
+                            .bind(&client, &row.id)
+                            .await?;
+                    }
                 }
             }
         }
@@ -127,5 +144,27 @@ impl OutboxRelay {
         client.batch_execute("COMMIT").await?;
 
         Ok(published_count)
+    }
+
+    /// Перенести событие в dead letter queue и пометить в outbox как обработанное.
+    async fn move_to_dlq(
+        &self,
+        client: &impl clorinde_gen::client::GenericClient,
+        row: &clorinde_gen::queries::common::outbox::GetUnpublishedEvents,
+        last_error: &str,
+    ) -> Result<(), anyhow::Error> {
+        error!(
+            event_id = %row.event_id,
+            event_type = %row.event_type,
+            retry_count = row.retry_count,
+            "event moved to dead letter queue"
+        );
+        clorinde_gen::queries::common::outbox::move_to_dlq()
+            .bind(client, &last_error, &row.id)
+            .await?;
+        clorinde_gen::queries::common::outbox::mark_dlq()
+            .bind(client, &row.id)
+            .await?;
+        Ok(())
     }
 }

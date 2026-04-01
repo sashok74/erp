@@ -36,9 +36,10 @@ impl AppBuilder {
             .await
             .expect("common migrations failed");
 
-        let inbox_bus = Arc::new(
-            db::InboxBusDecorator::new(bus as Arc<dyn EventBus>, pool.clone()),
-        );
+        let inbox_bus = Arc::new(db::InboxBusDecorator::new(
+            bus as Arc<dyn EventBus>,
+            pool.clone(),
+        ));
 
         Self {
             pool,

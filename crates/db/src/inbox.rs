@@ -99,7 +99,11 @@ impl ErasedEventHandler for InboxAwareHandler {
         let handler_name = self.inner.handler_name();
 
         // 1. Check: уже обработано этим handler'ом?
-        if self.inbox.is_processed(envelope.event_id, handler_name).await? {
+        if self
+            .inbox
+            .is_processed(envelope.event_id, handler_name)
+            .await?
+        {
             tracing::debug!(
                 event_id = %envelope.event_id,
                 event_type = %envelope.event_type,
@@ -116,12 +120,16 @@ impl ErasedEventHandler for InboxAwareHandler {
         // 3. Mark: фиксируем успешную обработку.
         //    Edge case: mark fail после handle OK — projection handlers (UPSERT)
         //    безвредны при повторе, notification handlers должны быть idempotent.
-        if let Err(e) = self.inbox.mark_processed(
-            envelope.event_id,
-            &envelope.event_type,
-            &envelope.source,
-            handler_name,
-        ).await {
+        if let Err(e) = self
+            .inbox
+            .mark_processed(
+                envelope.event_id,
+                &envelope.event_type,
+                &envelope.source,
+                handler_name,
+            )
+            .await
+        {
             tracing::warn!(
                 event_id = %envelope.event_id,
                 handler = handler_name,

@@ -1,6 +1,6 @@
 //! Scoped transaction helpers для tenant-isolated DB доступа.
 //!
-//! - [`ReadScope`] — guard для read-only запросов (acquire → auto-rollback on drop)
+//! - [`ReadScope`] — guard для read-only запросов (acquire → explicit `finish()`)
 //! - [`with_tenant_write`] — closure-based write TX для event handlers
 //!
 //! Гарантируют, что `SET LOCAL app.tenant_id` всегда выполняется внутри транзакции.
@@ -17,13 +17,14 @@ use crate::rls::set_tenant_context;
 /// Guard для read-only запросов с tenant isolation.
 ///
 /// `BEGIN READ ONLY` + `SET LOCAL tenant_id` при acquire.
-/// Read-only TX безопасно откатывается при drop (нет side effects).
+/// Read-only TX завершается через [`ReadScope::finish`].
+/// Если scope потерян до `finish()`, pool recycle выполнит cleanup соединения.
 ///
 /// ```ignore
 /// let read = ReadScope::acquire(&pool, ctx.tenant_id).await?;
 /// let repo = InventoryRepo::new(read.client(), ctx.tenant_id);
 /// let row = repo.get_balance(&sku).await?;
-/// // read dropped → ROLLBACK (safe for read-only TX)
+/// read.finish().await?;
 /// ```
 pub struct ReadScope {
     client: deadpool_postgres::Client,
@@ -86,8 +87,7 @@ pub async fn with_tenant_write<T: Send>(
     tenant_id: TenantId,
     f: impl for<'a> FnOnce(
         &'a deadpool_postgres::Client,
-    )
-        -> Pin<Box<dyn Future<Output = Result<T, anyhow::Error>> + Send + 'a>>,
+    ) -> Pin<Box<dyn Future<Output = Result<T, anyhow::Error>> + Send + 'a>>,
 ) -> Result<T, anyhow::Error> {
     let client = pool.get().await?;
     client.batch_execute("BEGIN").await?;

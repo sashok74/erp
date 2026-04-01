@@ -1,22 +1,20 @@
 #![warn(clippy::pedantic)]
 #![allow(clippy::module_name_repetitions)]
 
-//! ERP Auth — JWT issue/verify, RBAC, axum middleware.
+//! ERP Auth — JWT issue/verify, BC-owned RBAC via `PermissionRegistry`, axum middleware.
 //!
-//! Первая реальная реализация порта `PermissionChecker` из runtime.
-//! `JwtPermissionChecker` подставляется в `CommandPipeline` вместо `NoopPermissionChecker`.
-//!
-//! БД не нужна — роли в JWT claims, RBAC маппинг статический.
+//! `JwtPermissionChecker` backed by `PermissionRegistry` (built from BC manifests)
+//! plugs into `CommandPipeline` and `QueryPipeline` as `PermissionChecker`.
 
 pub mod checker;
 pub mod claims;
 pub mod jwt;
 pub mod middleware;
-pub mod rbac;
+pub mod registry;
 
-// Re-exports для удобства: `use auth::JwtService`
+// Re-exports
 pub use checker::JwtPermissionChecker;
-pub use claims::{Claims, Role};
+pub use claims::Claims;
 pub use jwt::JwtService;
 pub use middleware::{AppErrorResponse, auth_middleware};
-pub use rbac::{PermissionMap, default_erp_permissions};
+pub use registry::PermissionRegistry;

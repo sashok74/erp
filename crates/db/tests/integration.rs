@@ -26,6 +26,13 @@ fn new_ctx() -> RequestContext {
     RequestContext::new(TenantId::new(), UserId::new())
 }
 
+async fn begin_tenant_tx(pool: &db::PgPool, tenant_id: TenantId) -> deadpool_postgres::Object {
+    let client = pool.get().await.unwrap();
+    client.batch_execute("BEGIN").await.unwrap();
+    db::set_tenant_context(&**client, tenant_id).await.unwrap();
+    client
+}
+
 fn make_test_envelope(ctx: &RequestContext) -> EventEnvelope {
     #[derive(Debug, Clone, Serialize)]
     struct TestEvt {
@@ -89,54 +96,115 @@ async fn run_migrations_idempotent() {
 #[tokio::test]
 async fn rls_tenant_isolation() {
     let pool = db::PgPool::new(&database_url()).unwrap();
-    let client = pool.get().await.unwrap();
 
     let tenant_a = TenantId::new();
     let tenant_b = TenantId::new();
 
-    // INSERT row as superuser (RLS bypass for erp_admin).
-    client
-        .execute(
-            "INSERT INTO common.sequences (tenant_id, seq_name, prefix, next_value) \
-             VALUES ($1, 'rls_test_a', 'A-', 1)",
-            &[tenant_a.as_uuid()],
-        )
-        .await
-        .unwrap();
+    db::with_tenant_write(&pool, tenant_a, |client| {
+        Box::pin(async move {
+            client
+                .execute(
+                    "INSERT INTO common.sequences (tenant_id, seq_name, prefix, next_value) \
+                     VALUES ($1, 'rls_test_a', 'A-', 1)",
+                    &[tenant_a.as_uuid()],
+                )
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
 
-    client
-        .execute(
-            "INSERT INTO common.sequences (tenant_id, seq_name, prefix, next_value) \
-             VALUES ($1, 'rls_test_b', 'B-', 1)",
-            &[tenant_b.as_uuid()],
-        )
-        .await
-        .unwrap();
+    db::with_tenant_write(&pool, tenant_b, |client| {
+        Box::pin(async move {
+            client
+                .execute(
+                    "INSERT INTO common.sequences (tenant_id, seq_name, prefix, next_value) \
+                     VALUES ($1, 'rls_test_b', 'B-', 1)",
+                    &[tenant_b.as_uuid()],
+                )
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
 
-    // Теперь проверяем RLS: SET tenant_id = A → видна только строка A.
-    client.batch_execute("BEGIN").await.unwrap();
-    db::set_tenant_context(&**client, tenant_a).await.unwrap();
-
-    // erp_admin — superuser, RLS не применяется к нему напрямую.
-    // Для корректной проверки нужен non-superuser. Но мы можем проверить,
-    // что SET LOCAL работает (функция current_tenant_id возвращает правильный UUID).
-    let current = client
-        .query_one("SELECT common.current_tenant_id()", &[])
-        .await
-        .unwrap();
-    let current_uuid: Uuid = current.get(0);
-    assert_eq!(current_uuid, *tenant_a.as_uuid());
-
-    client.batch_execute("ROLLBACK").await.unwrap();
-
-    // Cleanup.
-    client
-        .execute(
-            "DELETE FROM common.sequences WHERE seq_name LIKE 'rls_test_%'",
+    let read_a = db::ReadScope::acquire(&pool, tenant_a).await.unwrap();
+    let count_a_visible: i64 = read_a
+        .client()
+        .query_one(
+            "SELECT COUNT(*) FROM common.sequences WHERE seq_name = 'rls_test_a'",
             &[],
         )
         .await
-        .unwrap();
+        .unwrap()
+        .get(0);
+    let count_b_hidden: i64 = read_a
+        .client()
+        .query_one(
+            "SELECT COUNT(*) FROM common.sequences WHERE seq_name = 'rls_test_b'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    read_a.finish().await.unwrap();
+
+    assert_eq!(count_a_visible, 1, "tenant A must see its own row");
+    assert_eq!(count_b_hidden, 0, "tenant A must not see tenant B row");
+
+    let read_b = db::ReadScope::acquire(&pool, tenant_b).await.unwrap();
+    let count_b_visible: i64 = read_b
+        .client()
+        .query_one(
+            "SELECT COUNT(*) FROM common.sequences WHERE seq_name = 'rls_test_b'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    let count_a_hidden: i64 = read_b
+        .client()
+        .query_one(
+            "SELECT COUNT(*) FROM common.sequences WHERE seq_name = 'rls_test_a'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    read_b.finish().await.unwrap();
+
+    assert_eq!(count_b_visible, 1, "tenant B must see its own row");
+    assert_eq!(count_a_hidden, 0, "tenant B must not see tenant A row");
+
+    db::with_tenant_write(&pool, tenant_a, |client| {
+        Box::pin(async move {
+            client
+                .execute(
+                    "DELETE FROM common.sequences WHERE seq_name = 'rls_test_a'",
+                    &[],
+                )
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+
+    db::with_tenant_write(&pool, tenant_b, |client| {
+        Box::pin(async move {
+            client
+                .execute(
+                    "DELETE FROM common.sequences WHERE seq_name = 'rls_test_b'",
+                    &[],
+                )
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
 }
 
 // ─── UoW commit → outbox ────────────────────────────────────────────────────
@@ -326,23 +394,21 @@ async fn clorinde_outbox_round_trip() {
 #[tokio::test]
 async fn clorinde_sequences_round_trip() {
     let pool = db::PgPool::new(&database_url()).unwrap();
-    let client = pool.get().await.unwrap();
+    let tenant_id = TenantId::new();
+    let tenant_uuid = *tenant_id.as_uuid();
+    let client = begin_tenant_tx(&pool, tenant_id).await;
 
-    let tenant_id = Uuid::now_v7();
     let seq_name = "clorinde_test_seq";
 
-    // Ensure sequence.
+    // Ensure sequence + read/update must run inside tenant-scoped TX.
     clorinde_gen::queries::common::sequences::ensure_sequence()
-        .bind(&client, &tenant_id, &seq_name, &"CT-")
+        .bind(&client, &tenant_uuid, &seq_name, &"CT-")
         .await
         .unwrap();
 
-    // Begin TX for FOR UPDATE.
-    client.batch_execute("BEGIN").await.unwrap();
-
     // Get next_value.
     let val = clorinde_gen::queries::common::sequences::next_value()
-        .bind(&client, &tenant_id, &seq_name)
+        .bind(&client, &tenant_uuid, &seq_name)
         .one()
         .await
         .unwrap();
@@ -351,20 +417,11 @@ async fn clorinde_sequences_round_trip() {
 
     // Increment.
     clorinde_gen::queries::common::sequences::increment_sequence()
-        .bind(&client, &tenant_id, &seq_name)
+        .bind(&client, &tenant_uuid, &seq_name)
         .await
         .unwrap();
 
-    client.batch_execute("COMMIT").await.unwrap();
-
-    // Cleanup.
-    client
-        .execute(
-            "DELETE FROM common.sequences WHERE tenant_id = $1 AND seq_name = $2",
-            &[&tenant_id, &seq_name],
-        )
-        .await
-        .unwrap();
+    client.batch_execute("ROLLBACK").await.unwrap();
 }
 
 // ─── Clorinde-gen inbox ─────────────────────────────────────────────────────
@@ -380,21 +437,39 @@ async fn clorinde_inbox_dedup() {
 
     // First insert → 1 row.
     let inserted = clorinde_gen::queries::common::inbox::try_insert_inbox()
-        .bind(&client, &event_id, &"erp.test.inbox.v1", &"test", &handler_name)
+        .bind(
+            &client,
+            &event_id,
+            &"erp.test.inbox.v1",
+            &"test",
+            &handler_name,
+        )
         .await
         .unwrap();
     assert_eq!(inserted, 1, "first insert should succeed");
 
     // Duplicate (same event_id + handler_name) → 0 rows (idempotent).
     let dup = clorinde_gen::queries::common::inbox::try_insert_inbox()
-        .bind(&client, &event_id, &"erp.test.inbox.v1", &"test", &handler_name)
+        .bind(
+            &client,
+            &event_id,
+            &"erp.test.inbox.v1",
+            &"test",
+            &handler_name,
+        )
         .await
         .unwrap();
     assert_eq!(dup, 0, "duplicate insert should be no-op");
 
     // Different handler_name → 1 row (independent).
     let other_handler = clorinde_gen::queries::common::inbox::try_insert_inbox()
-        .bind(&client, &event_id, &"erp.test.inbox.v1", &"test", &"other_handler")
+        .bind(
+            &client,
+            &event_id,
+            &"erp.test.inbox.v1",
+            &"test",
+            &"other_handler",
+        )
         .await
         .unwrap();
     assert_eq!(other_handler, 1, "different handler should succeed");
@@ -457,11 +532,12 @@ async fn clorinde_tenants_crud() {
 #[tokio::test]
 async fn clorinde_audit_insert() {
     let pool = db::PgPool::new(&database_url()).unwrap();
-    let client = pool.get().await.unwrap();
+    let tenant_id = TenantId::new();
+    let tenant_uuid = *tenant_id.as_uuid();
+    let client = begin_tenant_tx(&pool, tenant_id).await;
 
     let now = chrono::Utc::now().fixed_offset();
     let result = serde_json::json!({"status": "ok"});
-    let tenant_id = Uuid::now_v7();
     let user_id = Uuid::now_v7();
     let correlation_id = Uuid::now_v7();
     let causation_id = Uuid::now_v7();
@@ -469,7 +545,7 @@ async fn clorinde_audit_insert() {
     let id = clorinde_gen::queries::common::audit::insert_audit_log()
         .bind(
             &client,
-            &tenant_id,
+            &tenant_uuid,
             &user_id,
             &"warehouse::receive_goods",
             &result,
@@ -482,11 +558,7 @@ async fn clorinde_audit_insert() {
         .unwrap();
     assert!(id > 0);
 
-    // Cleanup.
-    client
-        .execute("DELETE FROM common.audit_log WHERE id = $1", &[&id])
-        .await
-        .unwrap();
+    client.batch_execute("ROLLBACK").await.unwrap();
 }
 
 // ─── Clorinde-gen domain_history ────────────────────────────────────────────
@@ -494,12 +566,13 @@ async fn clorinde_audit_insert() {
 #[tokio::test]
 async fn clorinde_domain_history_insert() {
     let pool = db::PgPool::new(&database_url()).unwrap();
-    let client = pool.get().await.unwrap();
+    let tenant_id = TenantId::new();
+    let tenant_uuid = *tenant_id.as_uuid();
+    let client = begin_tenant_tx(&pool, tenant_id).await;
 
     let now = chrono::Utc::now().fixed_offset();
     let old_state = serde_json::json!({"qty": 0});
     let new_state = serde_json::json!({"qty": 100});
-    let tenant_id = Uuid::now_v7();
     let entity_id = Uuid::now_v7();
     let correlation_id = Uuid::now_v7();
     let causation_id = Uuid::now_v7();
@@ -508,7 +581,7 @@ async fn clorinde_domain_history_insert() {
     let id = clorinde_gen::queries::common::domain_history::insert_domain_history()
         .bind(
             &client,
-            &tenant_id,
+            &tenant_uuid,
             &"warehouse::inventory_item",
             &entity_id,
             &"erp.warehouse.goods_received.v1",
@@ -524,11 +597,7 @@ async fn clorinde_domain_history_insert() {
         .unwrap();
     assert!(id > 0);
 
-    // Cleanup.
-    client
-        .execute("DELETE FROM common.domain_history WHERE id = $1", &[&id])
-        .await
-        .unwrap();
+    client.batch_execute("ROLLBACK").await.unwrap();
 }
 
 // ─── Outbox Relay ───────────────────────────────────────────────────────────
@@ -608,7 +677,13 @@ async fn relay_publishes_outbox_entry() {
 
     // Run relay — may publish more than 1 entry if other tests left data.
     // Relay now uses publish_and_wait (synchronous), so no sleep needed.
-    let relay = db::OutboxRelay::new(pool.clone(), bus.clone(), Duration::from_millis(50), 100, tokio_util::sync::CancellationToken::new());
+    let relay = db::OutboxRelay::new(
+        pool.clone(),
+        bus.clone(),
+        Duration::from_millis(50),
+        100,
+        tokio_util::sync::CancellationToken::new(),
+    );
     let published = relay.poll_and_publish().await.unwrap();
     assert!(published >= 1, "at least our entry should be published");
 
@@ -714,7 +789,13 @@ async fn relay_increments_retry_on_handler_error() {
     drop(client);
 
     // Run relay once — publish will fail, retry_count incremented.
-    let relay = db::OutboxRelay::new(pool.clone(), failing_bus, Duration::from_millis(50), 100, tokio_util::sync::CancellationToken::new());
+    let relay = db::OutboxRelay::new(
+        pool.clone(),
+        failing_bus,
+        Duration::from_millis(50),
+        100,
+        tokio_util::sync::CancellationToken::new(),
+    );
     relay.poll_and_publish().await.unwrap();
 
     // Verify retry_count incremented.
@@ -939,7 +1020,11 @@ async fn inbox_aware_handler_duplicate_skipped() {
 
     // Second call with same event_id → skipped.
     handler.handle_envelope(&envelope).await.unwrap();
-    assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1, "duplicate should be skipped");
+    assert_eq!(
+        count.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "duplicate should be skipped"
+    );
 
     // Cleanup.
     let client = pool.get().await.unwrap();
@@ -1016,7 +1101,8 @@ async fn inbox_aware_handler_error_allows_retry() {
     let ctx = new_ctx();
     let envelope = make_inbox_envelope(&ctx);
     let event_id = envelope.event_id;
-    let handler_name = "event_bus::registry::EventHandlerAdapter<db::integration::FailingTestHandler>";
+    let handler_name =
+        "event_bus::registry::EventHandlerAdapter<db::integration::FailingTestHandler>";
 
     // Handler returns Err → inbox NOT recorded.
     let result = handler.handle_envelope(&envelope).await;
@@ -1042,10 +1128,7 @@ async fn inbox_aware_handler_error_allows_retry() {
 async fn inbox_bus_decorator_event_map() {
     let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
     let inner_bus = Arc::new(InProcessBus::new());
-    let decorator = db::InboxBusDecorator::new(
-        inner_bus as Arc<dyn EventBus>,
-        pool,
-    );
+    let decorator = db::InboxBusDecorator::new(inner_bus as Arc<dyn EventBus>, pool);
 
     let count = Arc::new(AtomicUsize::new(0));
     let handler = Arc::new(EventHandlerAdapter::new(CountingTestHandler {
@@ -1065,10 +1148,7 @@ async fn inbox_bus_decorator_event_map() {
 async fn inbox_bus_decorator_dedup_via_publish_and_wait() {
     let pool = Arc::new(db::PgPool::new(&database_url()).unwrap());
     let inner_bus = Arc::new(InProcessBus::new());
-    let decorator = db::InboxBusDecorator::new(
-        inner_bus as Arc<dyn EventBus>,
-        pool.clone(),
-    );
+    let decorator = db::InboxBusDecorator::new(inner_bus as Arc<dyn EventBus>, pool.clone());
 
     let count = Arc::new(AtomicUsize::new(0));
     let handler = Arc::new(EventHandlerAdapter::new(CountingTestHandler {
@@ -1181,7 +1261,10 @@ async fn relay_handler_error_allows_retry_via_inbox() {
     let retry_count: i32 = row.get(0);
     let published_flag: bool = row.get(1);
     assert!(retry_count >= 1, "retry_count should be at least 1");
-    assert!(!published_flag, "should not be published after handler failure");
+    assert!(
+        !published_flag,
+        "should not be published after handler failure"
+    );
 
     // Inbox should NOT have a record → retry would re-invoke handler.
     let inbox_row = client
@@ -1198,7 +1281,10 @@ async fn relay_handler_error_allows_retry_via_inbox() {
 
     // Cleanup.
     client
-        .execute("DELETE FROM common.outbox WHERE event_id = $1", &[&event_id])
+        .execute(
+            "DELETE FROM common.outbox WHERE event_id = $1",
+            &[&event_id],
+        )
         .await
         .unwrap();
     client
@@ -1216,7 +1302,7 @@ async fn relay_handler_error_allows_retry_via_inbox() {
 /// This test:
 /// 1. Inserts a row via with_tenant_write (correct path)
 /// 2. Tries to read it WITHOUT tenant context → must get 0 rows
-/// 3. Reads it WITH tenant context via with_tenant_read → must get 1 row
+/// 3. Reads it WITH tenant context via ReadScope → must get 1 row
 /// 4. Reads it with WRONG tenant context → must get 0 rows
 #[tokio::test]
 async fn force_rls_blocks_read_without_tenant_context() {

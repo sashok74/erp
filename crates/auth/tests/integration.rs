@@ -10,8 +10,8 @@ use runtime::command_handler::CommandHandler;
 use runtime::pipeline::CommandPipeline;
 use runtime::stubs::{InMemoryUnitOfWorkFactory, NoopAuditLog, NoopExtensionHooks};
 
-use auth::checker::JwtPermissionChecker;
 use auth::PermissionRegistry;
+use auth::checker::JwtPermissionChecker;
 use kernel::security::{PermissionDef, PermissionManifest, RoleDef, RoleGrant};
 
 fn test_registry() -> Arc<PermissionRegistry> {
