@@ -11,6 +11,8 @@ use kernel::types::TenantId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::application::ports::InventoryRepo;
+
 /// Локальное представление события `ProductCreated` из Catalog BC.
 ///
 /// Decoupled: warehouse НЕ зависит от catalog crate.
@@ -51,30 +53,33 @@ impl event_bus::traits::EventHandler for ProductCreatedHandler {
     type Event = ProductCreatedEvent;
 
     async fn handle(&self, event: &Self::Event) -> Result<(), anyhow::Error> {
-        let client = self.pool.get().await?;
+        let event = event.clone();
+        db::with_tenant_write(
+            &self.pool,
+            TenantId::from_uuid(event.tenant_id),
+            |client| {
+                Box::pin(async move {
+                    let repo =
+                        InventoryRepo::new(client, TenantId::from_uuid(event.tenant_id));
+                    repo.upsert_product_projection(
+                        event.product_id,
+                        &event.sku,
+                        &event.name,
+                        &event.category,
+                    )
+                    .await?;
 
-        // Set RLS context
-        db::rls::set_tenant_context(&**client, TenantId::from_uuid(event.tenant_id)).await?;
+                    tracing::info!(
+                        sku = %event.sku,
+                        product_id = %event.product_id,
+                        "product projection upserted"
+                    );
 
-        // Upsert product projection
-        clorinde_gen::queries::warehouse::projections::upsert_product_projection()
-            .bind(
-                &**client,
-                &event.tenant_id,
-                &event.product_id,
-                &event.sku.as_str(),
-                &event.name.as_str(),
-                &event.category.as_str(),
-            )
-            .await?;
-
-        tracing::info!(
-            sku = %event.sku,
-            product_id = %event.product_id,
-            "product projection upserted"
-        );
-
-        Ok(())
+                    Ok(())
+                })
+            },
+        )
+        .await
     }
 
     fn handled_event_type(&self) -> &'static str {

@@ -10,8 +10,6 @@ use runtime::ports::UnitOfWork;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::pool::PgPool;
-use crate::rls::set_tenant_context;
 use crate::uow::{PendingHistoryEntry, PgUnitOfWork};
 
 /// Контекст для command handler'ов — доступ к `PgUnitOfWork` client + helpers.
@@ -119,32 +117,3 @@ impl<'a> PgCommandContext<'a> {
     }
 }
 
-/// Контекст для query handler'ов — checkout + RLS в одну строку.
-///
-/// ```ignore
-/// let db = ReadDbContext::acquire(&self.pool, ctx).await?;
-/// let row = Repo::find(db.client(), ...).await?;
-/// ```
-pub struct ReadDbContext {
-    client: deadpool_postgres::Object,
-}
-
-impl ReadDbContext {
-    /// Взять соединение из pool'а и установить tenant context (RLS).
-    ///
-    /// # Errors
-    ///
-    /// `AppError::Internal` при ошибке checkout'а или `SET tenant_id`.
-    pub async fn acquire(pool: &PgPool, ctx: &RequestContext) -> Result<Self, AppError> {
-        let client = pool.get().await.internal("pool checkout")?;
-        set_tenant_context(&**client, ctx.tenant_id)
-            .await
-            .internal("set tenant")?;
-        Ok(Self { client })
-    }
-
-    /// `PostgreSQL`-клиент с установленным RLS-контекстом.
-    pub fn client(&self) -> &deadpool_postgres::Object {
-        &self.client
-    }
-}

@@ -55,7 +55,7 @@ async fn happy_path_receive_goods() {
     let pool = setup_pool().await;
     let bus = Arc::new(InProcessBus::new());
     let pipeline = command_pipeline(pool.clone(), bus);
-    let handler = ReceiveGoodsHandler::new(pool.clone());
+    let handler = ReceiveGoodsHandler::new();
 
     let ctx = operator_ctx();
     let cmd = ReceiveGoodsCommand {
@@ -69,66 +69,69 @@ async fn happy_path_receive_goods() {
     assert_eq!(result.new_balance, BigDecimal::from(100));
     assert!(result.doc_number.starts_with("ПРХ-"));
 
-    // Assert DB: inventory_balances
-    let client = pool.get().await.unwrap();
-    let row = client
-        .query_one(
-            "SELECT balance::TEXT FROM warehouse.inventory_balances \
-             WHERE tenant_id = $1 AND item_id = $2",
-            &[ctx.tenant_id.as_uuid(), &result.item_id],
-        )
-        .await
-        .unwrap();
-    let balance: String = row.get(0);
+    // Assert DB: all checks in a single tenant-scoped read TX
+    let item_id = result.item_id;
+    let corr_id = ctx.correlation_id;
+    let (balance, count, event_type, command_name, entity_type, history_event_type) =
+        test_support::tenant_query(&pool, ctx.tenant_id, |client| Box::pin(async move {
+            let row = client
+                .query_one(
+                    "SELECT balance::TEXT FROM warehouse.inventory_balances \
+                     WHERE tenant_id = $1 AND item_id = $2",
+                    &[ctx.tenant_id.as_uuid(), &item_id],
+                )
+                .await
+                .unwrap();
+            let balance: String = row.get(0);
+
+            let count: i64 = client
+                .query_one(
+                    "SELECT COUNT(*) FROM warehouse.stock_movements \
+                     WHERE tenant_id = $1 AND item_id = $2",
+                    &[ctx.tenant_id.as_uuid(), &item_id],
+                )
+                .await
+                .unwrap()
+                .get(0);
+
+            let outbox_row = client
+                .query_one(
+                    "SELECT event_type FROM common.outbox \
+                     WHERE tenant_id = $1 AND correlation_id = $2",
+                    &[ctx.tenant_id.as_uuid(), &corr_id],
+                )
+                .await
+                .unwrap();
+            let event_type: String = outbox_row.get(0);
+
+            let audit_row = client
+                .query_one(
+                    "SELECT command_name FROM common.audit_log \
+                     WHERE tenant_id = $1 AND correlation_id = $2",
+                    &[ctx.tenant_id.as_uuid(), &corr_id],
+                )
+                .await
+                .unwrap();
+            let command_name: String = audit_row.get(0);
+
+            let history_row = client
+                .query_one(
+                    "SELECT entity_type, event_type FROM common.domain_history \
+                     WHERE tenant_id = $1 AND correlation_id = $2",
+                    &[ctx.tenant_id.as_uuid(), &corr_id],
+                )
+                .await
+                .unwrap();
+            let entity_type: String = history_row.get(0);
+            let history_event_type: String = history_row.get(1);
+
+            (balance, count, event_type, command_name, entity_type, history_event_type)
+        })).await;
+
     assert_eq!(balance, "100.0000");
-
-    // Assert DB: stock_movements (1 row)
-    let count: i64 = client
-        .query_one(
-            "SELECT COUNT(*) FROM warehouse.stock_movements \
-             WHERE tenant_id = $1 AND item_id = $2",
-            &[ctx.tenant_id.as_uuid(), &result.item_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
     assert_eq!(count, 1);
-
-    // Assert DB: common.outbox
-    let outbox_row = client
-        .query_one(
-            "SELECT event_type FROM common.outbox \
-             WHERE tenant_id = $1 AND correlation_id = $2",
-            &[ctx.tenant_id.as_uuid(), &ctx.correlation_id],
-        )
-        .await
-        .unwrap();
-    let event_type: String = outbox_row.get(0);
     assert_eq!(event_type, "erp.warehouse.goods_received.v1");
-
-    // Assert DB: common.audit_log
-    let audit_row = client
-        .query_one(
-            "SELECT command_name FROM common.audit_log \
-             WHERE tenant_id = $1 AND correlation_id = $2",
-            &[ctx.tenant_id.as_uuid(), &ctx.correlation_id],
-        )
-        .await
-        .unwrap();
-    let command_name: String = audit_row.get(0);
     assert_eq!(command_name, "warehouse.receive_goods");
-
-    // Assert DB: common.domain_history
-    let history_row = client
-        .query_one(
-            "SELECT entity_type, event_type FROM common.domain_history \
-             WHERE tenant_id = $1 AND correlation_id = $2",
-            &[ctx.tenant_id.as_uuid(), &ctx.correlation_id],
-        )
-        .await
-        .unwrap();
-    let entity_type: String = history_row.get(0);
-    let history_event_type: String = history_row.get(1);
     assert_eq!(entity_type, "inventory_item");
     assert_eq!(history_event_type, "erp.warehouse.goods_received.v1");
 
@@ -143,7 +146,7 @@ async fn cumulative_receive() {
     let pool = setup_pool().await;
     let bus = Arc::new(InProcessBus::new());
     let pipeline = command_pipeline(pool.clone(), bus);
-    let handler = ReceiveGoodsHandler::new(pool.clone());
+    let handler = ReceiveGoodsHandler::new();
 
     let ctx = operator_ctx();
 
@@ -171,16 +174,19 @@ async fn cumulative_receive() {
     assert_eq!(r2.new_balance, BigDecimal::from(150));
 
     // Assert 2 movements
-    let client = pool.get().await.unwrap();
-    let count: i64 = client
-        .query_one(
-            "SELECT COUNT(*) FROM warehouse.stock_movements \
-             WHERE tenant_id = $1 AND item_id = $2",
-            &[ctx.tenant_id.as_uuid(), &r1.item_id],
-        )
-        .await
-        .unwrap()
-        .get(0);
+    let item_id = r1.item_id;
+    let count = test_support::tenant_query(&pool, ctx.tenant_id, |client| Box::pin(async move {
+        let count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM warehouse.stock_movements \
+                 WHERE tenant_id = $1 AND item_id = $2",
+                &[ctx.tenant_id.as_uuid(), &item_id],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        count
+    })).await;
     assert_eq!(count, 2);
 
     cleanup_tenant(&pool, ctx.tenant_id).await;
@@ -193,7 +199,7 @@ async fn unauthorized_rejected() {
     let pool = setup_pool().await;
     let bus = Arc::new(InProcessBus::new());
     let pipeline = command_pipeline(pool.clone(), bus);
-    let handler = ReceiveGoodsHandler::new(pool.clone());
+    let handler = ReceiveGoodsHandler::new();
 
     let ctx = ctx_with_roles(&["viewer"]); // no warehouse permissions
     let cmd = ReceiveGoodsCommand {
@@ -205,16 +211,18 @@ async fn unauthorized_rejected() {
     assert!(matches!(result, Err(kernel::AppError::Unauthorized(_))));
 
     // No side effects
-    let client = pool.get().await.unwrap();
-    let count: i64 = client
-        .query_one(
-            "SELECT COUNT(*) FROM warehouse.stock_movements \
-             WHERE tenant_id = $1",
-            &[ctx.tenant_id.as_uuid()],
-        )
-        .await
-        .unwrap()
-        .get(0);
+    let count = test_support::tenant_query(&pool, ctx.tenant_id, |client| Box::pin(async move {
+        let count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM warehouse.stock_movements \
+                 WHERE tenant_id = $1",
+                &[ctx.tenant_id.as_uuid()],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        count
+    })).await;
     assert_eq!(
         count, 0,
         "no movements should exist for unauthorized request"
@@ -223,16 +231,15 @@ async fn unauthorized_rejected() {
     cleanup_tenant(&pool, ctx.tenant_id).await;
 }
 
-// ─── Test 4: GetBalance query ───────────────────────────────────────────────
+// ─── Test 4: GetBalance query via QueryPipeline ────────────────────────────
 
 #[tokio::test]
 async fn get_balance_after_receive() {
-    use runtime::query_handler::QueryHandler;
-
     let pool = setup_pool().await;
     let bus = Arc::new(InProcessBus::new());
-    let pipeline = command_pipeline(pool.clone(), bus);
-    let handler = ReceiveGoodsHandler::new(pool.clone());
+    let cmd_pipeline = command_pipeline(pool.clone(), bus);
+    let qry_pipeline = test_support::query_pipeline(pool.clone());
+    let handler = ReceiveGoodsHandler::new();
     let query_handler = GetBalanceHandler::new(pool.clone());
 
     let ctx = operator_ctx();
@@ -240,29 +247,122 @@ async fn get_balance_after_receive() {
         sku: "BOLT-QRY".into(),
         quantity: BigDecimal::from(100),
     };
-    pipeline.execute(&handler, &cmd, &ctx).await.unwrap();
+    cmd_pipeline.execute(&handler, &cmd, &ctx).await.unwrap();
 
-    // Query balance
+    // Query balance through QueryPipeline (auth checked)
     let query = GetBalanceQuery {
         sku: "BOLT-QRY".into(),
     };
-    let balance = query_handler.handle(&query, &ctx).await.unwrap();
+    let balance = qry_pipeline
+        .execute(&query_handler, &query, &ctx)
+        .await
+        .unwrap();
     assert_eq!(balance.balance, BigDecimal::from(100));
     assert!(balance.item_id.is_some());
 
     cleanup_tenant(&pool, ctx.tenant_id).await;
 }
 
-// ─── Test 5: RLS tenant isolation ───────────────────────────────────────────
+// ─── Test 4a: Viewer can query warehouse balance ────────────────────────────
 
 #[tokio::test]
-async fn rls_tenant_isolation() {
-    use runtime::query_handler::QueryHandler;
+async fn viewer_can_query_warehouse_balance() {
+    let pool = setup_pool().await;
+    let bus = Arc::new(InProcessBus::new());
+    let cmd_pipeline = command_pipeline(pool.clone(), bus);
+    let qry_pipeline = test_support::query_pipeline(pool.clone());
+    let handler = ReceiveGoodsHandler::new();
+    let query_handler = GetBalanceHandler::new(pool.clone());
 
+    // Create data as operator
+    let op_ctx = operator_ctx();
+    let cmd = ReceiveGoodsCommand {
+        sku: "BOLT-VIEW".into(),
+        quantity: BigDecimal::from(50),
+    };
+    cmd_pipeline.execute(&handler, &cmd, &op_ctx).await.unwrap();
+
+    // Query as viewer — should succeed (explicit grant in manifest)
+    let mut viewer_ctx = ctx_with_roles(&["viewer"]);
+    viewer_ctx.tenant_id = op_ctx.tenant_id;
+
+    let query = GetBalanceQuery {
+        sku: "BOLT-VIEW".into(),
+    };
+    let balance = qry_pipeline
+        .execute(&query_handler, &query, &viewer_ctx)
+        .await
+        .unwrap();
+    assert_eq!(balance.balance, BigDecimal::from(50));
+
+    cleanup_tenant(&pool, op_ctx.tenant_id).await;
+}
+
+// ─── Test 4b: Catalog role denied warehouse query ───────────────────────────
+
+#[tokio::test]
+async fn catalog_role_denied_warehouse_query() {
+    let pool = setup_pool().await;
+    let qry_pipeline = test_support::query_pipeline(pool.clone());
+    let query_handler = GetBalanceHandler::new(pool.clone());
+
+    let ctx = ctx_with_roles(&["catalog_manager"]);
+    let query = GetBalanceQuery {
+        sku: "BOLT-DENY".into(),
+    };
+    let result = qry_pipeline.execute(&query_handler, &query, &ctx).await;
+    assert!(matches!(result, Err(kernel::AppError::Unauthorized(_))));
+
+    cleanup_tenant(&pool, ctx.tenant_id).await;
+}
+
+// ─── Test 4c: Unknown role denied warehouse command ─────────────────────────
+
+#[tokio::test]
+async fn unknown_role_denied_warehouse_command() {
     let pool = setup_pool().await;
     let bus = Arc::new(InProcessBus::new());
     let pipeline = command_pipeline(pool.clone(), bus);
-    let handler = ReceiveGoodsHandler::new(pool.clone());
+    let handler = ReceiveGoodsHandler::new();
+
+    let ctx = ctx_with_roles(&["nonexistent_role"]);
+    let cmd = ReceiveGoodsCommand {
+        sku: "BOLT-UNKNOWN".into(),
+        quantity: BigDecimal::from(100),
+    };
+    let result = pipeline.execute(&handler, &cmd, &ctx).await;
+    assert!(matches!(result, Err(kernel::AppError::Unauthorized(_))));
+
+    cleanup_tenant(&pool, ctx.tenant_id).await;
+}
+
+// ─── Test 4d: Unknown role denied warehouse query ───────────────────────────
+
+#[tokio::test]
+async fn unknown_role_denied_warehouse_query() {
+    let pool = setup_pool().await;
+    let qry_pipeline = test_support::query_pipeline(pool.clone());
+    let query_handler = GetBalanceHandler::new(pool.clone());
+
+    let ctx = ctx_with_roles(&["nonexistent_role"]);
+    let query = GetBalanceQuery {
+        sku: "BOLT-UNKNOWN".into(),
+    };
+    let result = qry_pipeline.execute(&query_handler, &query, &ctx).await;
+    assert!(matches!(result, Err(kernel::AppError::Unauthorized(_))));
+
+    cleanup_tenant(&pool, ctx.tenant_id).await;
+}
+
+// ─── Test 5: RLS tenant isolation via QueryPipeline ─────────────────────────
+
+#[tokio::test]
+async fn rls_tenant_isolation() {
+    let pool = setup_pool().await;
+    let bus = Arc::new(InProcessBus::new());
+    let cmd_pipeline = command_pipeline(pool.clone(), bus);
+    let qry_pipeline = test_support::query_pipeline(pool.clone());
+    let handler = ReceiveGoodsHandler::new();
     let query_handler = GetBalanceHandler::new(pool.clone());
 
     // Tenant A receives goods
@@ -271,14 +371,20 @@ async fn rls_tenant_isolation() {
         sku: "BOLT-RLS".into(),
         quantity: BigDecimal::from(100),
     };
-    pipeline.execute(&handler, &cmd, &ctx_a).await.unwrap();
+    cmd_pipeline
+        .execute(&handler, &cmd, &ctx_a)
+        .await
+        .unwrap();
 
     // Tenant B queries same SKU → not found
     let ctx_b = operator_ctx(); // different tenant_id
     let query = GetBalanceQuery {
         sku: "BOLT-RLS".into(),
     };
-    let balance = query_handler.handle(&query, &ctx_b).await.unwrap();
+    let balance = qry_pipeline
+        .execute(&query_handler, &query, &ctx_b)
+        .await
+        .unwrap();
     assert!(
         balance.item_id.is_none(),
         "tenant B should not see tenant A's data"
@@ -339,7 +445,7 @@ async fn outbox_relay_delivers_event() {
         .await;
 
     let pipeline = command_pipeline(pool.clone(), bus.clone());
-    let cmd_handler = ReceiveGoodsHandler::new(pool.clone());
+    let cmd_handler = ReceiveGoodsHandler::new();
 
     let ctx = operator_ctx();
     let cmd = ReceiveGoodsCommand {
@@ -349,7 +455,7 @@ async fn outbox_relay_delivers_event() {
     pipeline.execute(&cmd_handler, &cmd, &ctx).await.unwrap();
 
     // Run relay: single poll
-    let relay = db::OutboxRelay::new(pool.clone(), bus, Duration::from_millis(100), 10);
+    let relay = db::OutboxRelay::new(pool.clone(), bus, Duration::from_millis(100), 10, tokio_util::sync::CancellationToken::new());
     let _ = relay.poll_and_publish().await;
 
     // Give async handler time to complete
@@ -370,7 +476,7 @@ async fn doc_number_sequence_gap_free() {
     let pool = setup_pool().await;
     let bus = Arc::new(InProcessBus::new());
     let pipeline = command_pipeline(pool.clone(), bus);
-    let handler = ReceiveGoodsHandler::new(pool.clone());
+    let handler = ReceiveGoodsHandler::new();
 
     let ctx = operator_ctx();
 

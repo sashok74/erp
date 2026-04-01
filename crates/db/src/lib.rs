@@ -16,13 +16,15 @@ pub mod pool;
 pub mod relay;
 pub mod repo_macros;
 pub mod rls;
+pub mod scoped;
 pub mod transport;
 pub mod uow;
 
 pub use transport::DecStr;
 
 pub use bus_decorator::InboxBusDecorator;
-pub use context::{PgCommandContext, ReadDbContext};
+pub use context::PgCommandContext;
+pub use scoped::{with_tenant_read, with_tenant_write};
 pub use inbox::InboxGuard;
 pub use pool::PgPool;
 pub use relay::OutboxRelay;

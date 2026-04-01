@@ -48,23 +48,33 @@ impl PgAuditLog {
         command_name: &str,
         result: &serde_json::Value,
     ) -> Result<(), anyhow::Error> {
-        let client = self.pool.get().await?;
-        let now = chrono::Utc::now().fixed_offset();
-        let tenant_id = *ctx.tenant_id.as_uuid();
+        let tenant_id = ctx.tenant_id;
         let user_id = *ctx.user_id.as_uuid();
-        clorinde_gen::queries::common::audit::insert_audit_log()
-            .bind(
-                &client,
-                &tenant_id,
-                &user_id,
-                &command_name,
-                result,
-                &ctx.correlation_id,
-                &ctx.causation_id,
-                &now,
-            )
-            .one()
-            .await?;
-        Ok(())
+        let correlation_id = ctx.correlation_id;
+        let causation_id = ctx.causation_id;
+        let command_name = command_name.to_string();
+        let result = result.clone();
+
+        db::with_tenant_write(&self.pool, tenant_id, |client| {
+            Box::pin(async move {
+                let now = chrono::Utc::now().fixed_offset();
+                let tid = *tenant_id.as_uuid();
+                clorinde_gen::queries::common::audit::insert_audit_log()
+                    .bind(
+                        client,
+                        &tid,
+                        &user_id,
+                        &command_name.as_str(),
+                        &result,
+                        &correlation_id,
+                        &causation_id,
+                        &now,
+                    )
+                    .one()
+                    .await?;
+                Ok(())
+            })
+        })
+        .await
     }
 }

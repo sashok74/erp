@@ -12,7 +12,7 @@ use event_bus::InProcessBus;
 use event_bus::registry::ErasedEventHandler;
 use event_bus::traits::{EventBus, EventHandler};
 use event_bus::{EventEnvelope, EventHandlerAdapter};
-use kernel::DomainEvent;
+use kernel::{DomainEvent, IntoInternal};
 use kernel::types::{RequestContext, TenantId, UserId};
 use runtime::ports::{UnitOfWork, UnitOfWorkFactory};
 use serde::{Deserialize, Serialize};
@@ -608,7 +608,7 @@ async fn relay_publishes_outbox_entry() {
 
     // Run relay — may publish more than 1 entry if other tests left data.
     // Relay now uses publish_and_wait (synchronous), so no sleep needed.
-    let relay = db::OutboxRelay::new(pool.clone(), bus.clone(), Duration::from_millis(50), 100);
+    let relay = db::OutboxRelay::new(pool.clone(), bus.clone(), Duration::from_millis(50), 100, tokio_util::sync::CancellationToken::new());
     let published = relay.poll_and_publish().await.unwrap();
     assert!(published >= 1, "at least our entry should be published");
 
@@ -714,7 +714,7 @@ async fn relay_increments_retry_on_handler_error() {
     drop(client);
 
     // Run relay once — publish will fail, retry_count incremented.
-    let relay = db::OutboxRelay::new(pool.clone(), failing_bus, Duration::from_millis(50), 100);
+    let relay = db::OutboxRelay::new(pool.clone(), failing_bus, Duration::from_millis(50), 100, tokio_util::sync::CancellationToken::new());
     relay.poll_and_publish().await.unwrap();
 
     // Verify retry_count incremented.
@@ -731,17 +731,18 @@ async fn relay_increments_retry_on_handler_error() {
     assert!(retry_count >= 1, "retry_count should be at least 1");
     assert!(!published_flag, "should not be published after failure");
 
-    // Test max-retry skip: set retry_count to 3 directly, verify relay skips it.
+    // Test max-retry → DLQ: set retry_count to MAX_RETRIES, verify relay moves to dead_letters.
     client
         .execute(
-            "UPDATE common.outbox SET retry_count = 3 WHERE event_id = $1",
+            "UPDATE common.outbox SET retry_count = 3, published = false WHERE event_id = $1",
             &[&event_id],
         )
         .await
         .unwrap();
 
     let published = relay.poll_and_publish().await.unwrap();
-    // Our entry should be skipped — it's at max retries.
+
+    // Outbox entry should be marked as published (removed from relay scope).
     let row = client
         .query_one(
             "SELECT published FROM common.outbox WHERE event_id = $1",
@@ -749,13 +750,30 @@ async fn relay_increments_retry_on_handler_error() {
         )
         .await
         .unwrap();
-    let still_unpublished: bool = !row.get::<_, bool>(0);
     assert!(
-        still_unpublished,
-        "entry at max retries should remain unpublished"
+        row.get::<_, bool>(0),
+        "entry at max retries should be marked published after DLQ move"
     );
 
+    // Dead letter should exist.
+    let dlq_row = client
+        .query_one(
+            "SELECT event_type, last_error FROM common.dead_letters WHERE event_id = $1",
+            &[&event_id],
+        )
+        .await
+        .unwrap();
+    let dlq_event_type: String = dlq_row.get(0);
+    assert_eq!(dlq_event_type, envelope.event_type);
+
     // Cleanup.
+    client
+        .execute(
+            "DELETE FROM common.dead_letters WHERE event_id = $1",
+            &[&event_id],
+        )
+        .await
+        .unwrap();
     client
         .execute(
             "DELETE FROM common.outbox WHERE event_id = $1",
@@ -1147,6 +1165,7 @@ async fn relay_handler_error_allows_retry_via_inbox() {
         decorator as Arc<dyn EventBus>,
         Duration::from_millis(50),
         100,
+        tokio_util::sync::CancellationToken::new(),
     );
     relay.poll_and_publish().await.unwrap();
 
@@ -1186,4 +1205,119 @@ async fn relay_handler_error_allows_retry_via_inbox() {
         .execute("DELETE FROM common.inbox WHERE event_id = $1", &[&event_id])
         .await
         .ok();
+}
+
+// ─── RLS enforcement: FORCE RLS blocks reads without tenant context ────────
+
+/// Regression test for P0 finding (2026-04-01 arch review):
+/// FORCE ROW LEVEL SECURITY ensures that even the table owner
+/// cannot read tenant data without SET LOCAL app.tenant_id.
+///
+/// This test:
+/// 1. Inserts a row via with_tenant_write (correct path)
+/// 2. Tries to read it WITHOUT tenant context → must get 0 rows
+/// 3. Reads it WITH tenant context via with_tenant_read → must get 1 row
+/// 4. Reads it with WRONG tenant context → must get 0 rows
+#[tokio::test]
+async fn force_rls_blocks_read_without_tenant_context() {
+    let pool = db::PgPool::new(&database_url()).unwrap();
+
+    db::migrate::run_migrations(&pool, "../../migrations/common")
+        .await
+        .unwrap();
+    db::migrate::run_migrations(&pool, "../../migrations/warehouse")
+        .await
+        .unwrap();
+
+    let tenant_a = TenantId::new();
+    let item_id = Uuid::now_v7();
+    let sku = "RLS-ENFORCE-TEST";
+
+    // 1. Insert via with_tenant_write (correct tenant context).
+    db::with_tenant_write(&pool, tenant_a, |client| {
+        Box::pin(async move {
+            client
+                .execute(
+                    "INSERT INTO warehouse.inventory_items (tenant_id, id, sku) VALUES ($1, $2, $3)",
+                    &[tenant_a.as_uuid(), &item_id, &sku],
+                )
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+
+    // 2. Read WITHOUT tenant context (raw connection, no SET LOCAL) → 0 rows.
+    //    FORCE RLS means even owner is blocked.
+    let client = pool.get().await.unwrap();
+    let count_no_ctx: i64 = client
+        .query_one(
+            "SELECT COUNT(*) FROM warehouse.inventory_items WHERE id = $1",
+            &[&item_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    drop(client);
+    assert_eq!(
+        count_no_ctx, 0,
+        "FORCE RLS must block reads without tenant context"
+    );
+
+    // 3. Read WITH correct tenant context → 1 row.
+    let count_correct: i64 = db::with_tenant_read(&pool, tenant_a, |client| {
+        Box::pin(async move {
+            let row = client
+                .query_one(
+                    "SELECT COUNT(*) FROM warehouse.inventory_items WHERE id = $1",
+                    &[&item_id],
+                )
+                .await
+                .internal("count")?;
+            Ok(row.get(0))
+        })
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        count_correct, 1,
+        "with_tenant_read with correct tenant must see the row"
+    );
+
+    // 4. Read with WRONG tenant context → 0 rows.
+    let tenant_b = TenantId::new();
+    let count_wrong: i64 = db::with_tenant_read(&pool, tenant_b, |client| {
+        Box::pin(async move {
+            let row = client
+                .query_one(
+                    "SELECT COUNT(*) FROM warehouse.inventory_items WHERE id = $1",
+                    &[&item_id],
+                )
+                .await
+                .internal("count")?;
+            Ok(row.get(0))
+        })
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        count_wrong, 0,
+        "with_tenant_read with wrong tenant must NOT see the row"
+    );
+
+    // Cleanup.
+    db::with_tenant_write(&pool, tenant_a, |client| {
+        Box::pin(async move {
+            client
+                .execute(
+                    "DELETE FROM warehouse.inventory_items WHERE id = $1",
+                    &[&item_id],
+                )
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
 }

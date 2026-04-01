@@ -8,10 +8,13 @@ publish = false
 
 [dependencies]
 tokio = { workspace = true }
+deadpool-postgres = { workspace = true }
 db = { workspace = true }
 kernel = { workspace = true }
 runtime = { workspace = true }
 event_bus = { workspace = true }
 auth = { workspace = true }
 audit = { workspace = true }
+warehouse = { workspace = true }
+catalog = { workspace = true }
 

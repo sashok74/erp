@@ -43,7 +43,7 @@ async fn cleanup_tenant(pool: &db::PgPool, tenant_id: TenantId) {
 async fn happy_path_create_product() {
     let pool = setup_pool().await;
     let pipeline = command_pipeline(pool.clone(), Arc::new(event_bus::InProcessBus::new()));
-    let handler = CreateProductHandler::new(pool.clone());
+    let handler = CreateProductHandler::new();
 
     let ctx = catalog_manager_ctx();
     let cmd = CreateProductCommand {
@@ -56,42 +56,47 @@ async fn happy_path_create_product() {
     let result = pipeline.execute(&handler, &cmd, &ctx).await.unwrap();
     assert!(!result.product_id.is_nil());
 
-    // Verify DB: product exists
-    let client = pool.get().await.unwrap();
-    let row = client
-        .query_one(
-            "SELECT sku, name FROM catalog.products WHERE tenant_id = $1 AND id = $2",
-            &[ctx.tenant_id.as_uuid(), &result.product_id],
-        )
-        .await
-        .unwrap();
-    let sku: String = row.get(0);
-    let name: String = row.get(1);
+    // Verify DB: product, outbox, audit — all in a single tenant-scoped read TX
+    let product_id = result.product_id;
+    let corr_id = ctx.correlation_id;
+    let (sku, name, event_type, cmd_name) =
+        test_support::tenant_query(&pool, ctx.tenant_id, |client| Box::pin(async move {
+            let row = client
+                .query_one(
+                    "SELECT sku, name FROM catalog.products WHERE tenant_id = $1 AND id = $2",
+                    &[ctx.tenant_id.as_uuid(), &product_id],
+                )
+                .await
+                .unwrap();
+            let sku: String = row.get(0);
+            let name: String = row.get(1);
+
+            let outbox = client
+                .query_one(
+                    "SELECT event_type FROM common.outbox \
+                     WHERE tenant_id = $1 AND correlation_id = $2",
+                    &[ctx.tenant_id.as_uuid(), &corr_id],
+                )
+                .await
+                .unwrap();
+            let event_type: String = outbox.get(0);
+
+            let audit = client
+                .query_one(
+                    "SELECT command_name FROM common.audit_log \
+                     WHERE tenant_id = $1 AND correlation_id = $2",
+                    &[ctx.tenant_id.as_uuid(), &corr_id],
+                )
+                .await
+                .unwrap();
+            let cmd_name: String = audit.get(0);
+
+            (sku, name, event_type, cmd_name)
+        })).await;
+
     assert_eq!(sku, "BOLT-42");
     assert_eq!(name, "Болт М8");
-
-    // Verify outbox
-    let outbox = client
-        .query_one(
-            "SELECT event_type FROM common.outbox \
-             WHERE tenant_id = $1 AND correlation_id = $2",
-            &[ctx.tenant_id.as_uuid(), &ctx.correlation_id],
-        )
-        .await
-        .unwrap();
-    let event_type: String = outbox.get(0);
     assert_eq!(event_type, "erp.catalog.product_created.v1");
-
-    // Verify audit
-    let audit = client
-        .query_one(
-            "SELECT command_name FROM common.audit_log \
-             WHERE tenant_id = $1 AND correlation_id = $2",
-            &[ctx.tenant_id.as_uuid(), &ctx.correlation_id],
-        )
-        .await
-        .unwrap();
-    let cmd_name: String = audit.get(0);
     assert_eq!(cmd_name, "catalog.create_product");
 
     cleanup_tenant(&pool, ctx.tenant_id).await;
@@ -103,7 +108,7 @@ async fn happy_path_create_product() {
 async fn duplicate_sku_rejected() {
     let pool = setup_pool().await;
     let pipeline = command_pipeline(pool.clone(), Arc::new(event_bus::InProcessBus::new()));
-    let handler = CreateProductHandler::new(pool.clone());
+    let handler = CreateProductHandler::new();
 
     let ctx = catalog_manager_ctx();
     let cmd = CreateProductCommand {
@@ -134,7 +139,7 @@ async fn duplicate_sku_rejected() {
 async fn unauthorized_rejected() {
     let pool = setup_pool().await;
     let pipeline = command_pipeline(pool.clone(), Arc::new(event_bus::InProcessBus::new()));
-    let handler = CreateProductHandler::new(pool.clone());
+    let handler = CreateProductHandler::new();
 
     let ctx = ctx_with_roles(&["viewer"]);
     let cmd = CreateProductCommand {
@@ -150,15 +155,14 @@ async fn unauthorized_rejected() {
     cleanup_tenant(&pool, ctx.tenant_id).await;
 }
 
-// ─── Test 4: GetProduct query ───────────────────────────────────────────────
+// ─── Test 4: GetProduct query via QueryPipeline ─────────────────────────────
 
 #[tokio::test]
 async fn get_product_after_create() {
-    use runtime::query_handler::QueryHandler;
-
     let pool = setup_pool().await;
-    let pipeline = command_pipeline(pool.clone(), Arc::new(event_bus::InProcessBus::new()));
-    let create_handler = CreateProductHandler::new(pool.clone());
+    let cmd_pipeline = command_pipeline(pool.clone(), Arc::new(event_bus::InProcessBus::new()));
+    let qry_pipeline = test_support::query_pipeline(pool.clone());
+    let create_handler = CreateProductHandler::new();
     let query_handler = GetProductHandler::new(pool.clone());
 
     let ctx = catalog_manager_ctx();
@@ -168,12 +172,18 @@ async fn get_product_after_create() {
         category: "Метизы".into(),
         unit: "шт".into(),
     };
-    pipeline.execute(&create_handler, &cmd, &ctx).await.unwrap();
+    cmd_pipeline
+        .execute(&create_handler, &cmd, &ctx)
+        .await
+        .unwrap();
 
     let query = GetProductQuery {
         sku: "QRY-BOLT".into(),
     };
-    let result = query_handler.handle(&query, &ctx).await.unwrap();
+    let result = qry_pipeline
+        .execute(&query_handler, &query, &ctx)
+        .await
+        .unwrap();
     assert_eq!(result.sku, "QRY-BOLT");
     assert_eq!(result.name, "Болт запросный");
     assert!(!result.product_id.is_nil());
@@ -181,7 +191,162 @@ async fn get_product_after_create() {
     cleanup_tenant(&pool, ctx.tenant_id).await;
 }
 
-// ─── Test 5: Cross-context E2E — ProductCreated → warehouse projection ──────
+// ─── Test 4a: Viewer can query catalog via QueryPipeline ────────────────────
+
+#[tokio::test]
+async fn viewer_can_query_catalog_product() {
+    let pool = setup_pool().await;
+    let cmd_pipeline = command_pipeline(pool.clone(), Arc::new(event_bus::InProcessBus::new()));
+    let qry_pipeline = test_support::query_pipeline(pool.clone());
+    let create_handler = CreateProductHandler::new();
+    let query_handler = GetProductHandler::new(pool.clone());
+
+    // Create as catalog_manager
+    let mgr_ctx = catalog_manager_ctx();
+    let cmd = CreateProductCommand {
+        sku: "VIEW-BOLT".into(),
+        name: "Болт для просмотра".into(),
+        category: "Метизы".into(),
+        unit: "шт".into(),
+    };
+    cmd_pipeline
+        .execute(&create_handler, &cmd, &mgr_ctx)
+        .await
+        .unwrap();
+
+    // Query as viewer — should succeed (explicit grant in manifest)
+    let mut viewer_ctx = ctx_with_roles(&["viewer"]);
+    viewer_ctx.tenant_id = mgr_ctx.tenant_id;
+
+    let query = GetProductQuery {
+        sku: "VIEW-BOLT".into(),
+    };
+    let result = qry_pipeline
+        .execute(&query_handler, &query, &viewer_ctx)
+        .await
+        .unwrap();
+    assert_eq!(result.sku, "VIEW-BOLT");
+
+    cleanup_tenant(&pool, mgr_ctx.tenant_id).await;
+}
+
+// ─── Test 4b: Viewer denied command via CommandPipeline ─────────────────────
+
+#[tokio::test]
+async fn viewer_denied_catalog_command() {
+    let pool = setup_pool().await;
+    let pipeline = command_pipeline(pool.clone(), Arc::new(event_bus::InProcessBus::new()));
+    let handler = CreateProductHandler::new();
+
+    let ctx = ctx_with_roles(&["viewer"]);
+    let cmd = CreateProductCommand {
+        sku: "VIEW-DENY".into(),
+        name: "Test".into(),
+        category: "Cat".into(),
+        unit: "шт".into(),
+    };
+    let result = pipeline.execute(&handler, &cmd, &ctx).await;
+    assert!(matches!(result, Err(kernel::AppError::Unauthorized(_))));
+
+    cleanup_tenant(&pool, ctx.tenant_id).await;
+}
+
+// ─── Test 4c: Warehouse role denied catalog query ───────────────────────────
+
+#[tokio::test]
+async fn warehouse_role_denied_catalog_query() {
+    let pool = setup_pool().await;
+    let qry_pipeline = test_support::query_pipeline(pool.clone());
+    let query_handler = GetProductHandler::new(pool.clone());
+
+    let ctx = ctx_with_roles(&["warehouse_operator"]);
+    let query = GetProductQuery {
+        sku: "CROSS-DENY".into(),
+    };
+    let result = qry_pipeline.execute(&query_handler, &query, &ctx).await;
+    assert!(matches!(result, Err(kernel::AppError::Unauthorized(_))));
+
+    cleanup_tenant(&pool, ctx.tenant_id).await;
+}
+
+// ─── Test 5a: Unknown role denied catalog command ──────────────────────────
+
+#[tokio::test]
+async fn unknown_role_denied_catalog_command() {
+    let pool = setup_pool().await;
+    let pipeline = command_pipeline(pool.clone(), Arc::new(event_bus::InProcessBus::new()));
+    let handler = CreateProductHandler::new();
+
+    let ctx = ctx_with_roles(&["nonexistent_role"]);
+    let cmd = CreateProductCommand {
+        sku: "UNKNOWN-CMD".into(),
+        name: "Test".into(),
+        category: "Cat".into(),
+        unit: "шт".into(),
+    };
+    let result = pipeline.execute(&handler, &cmd, &ctx).await;
+    assert!(matches!(result, Err(kernel::AppError::Unauthorized(_))));
+
+    cleanup_tenant(&pool, ctx.tenant_id).await;
+}
+
+// ─── Test 5b: Unknown role denied catalog query ────────────────────────────
+
+#[tokio::test]
+async fn unknown_role_denied_catalog_query() {
+    let pool = setup_pool().await;
+    let qry_pipeline = test_support::query_pipeline(pool.clone());
+    let query_handler = GetProductHandler::new(pool.clone());
+
+    let ctx = ctx_with_roles(&["nonexistent_role"]);
+    let query = GetProductQuery {
+        sku: "UNKNOWN-QRY".into(),
+    };
+    let result = qry_pipeline.execute(&query_handler, &query, &ctx).await;
+    assert!(matches!(result, Err(kernel::AppError::Unauthorized(_))));
+
+    cleanup_tenant(&pool, ctx.tenant_id).await;
+}
+
+// ─── Test 5c: Catalog query respects tenant isolation ───────────────────────
+
+#[tokio::test]
+async fn catalog_query_tenant_isolation() {
+    let pool = setup_pool().await;
+    let cmd_pipeline = command_pipeline(pool.clone(), Arc::new(event_bus::InProcessBus::new()));
+    let qry_pipeline = test_support::query_pipeline(pool.clone());
+    let create_handler = CreateProductHandler::new();
+    let query_handler = GetProductHandler::new(pool.clone());
+
+    // Tenant A creates a product
+    let ctx_a = catalog_manager_ctx();
+    let cmd = CreateProductCommand {
+        sku: "TENANT-BOLT".into(),
+        name: "Товар tenant A".into(),
+        category: "Метизы".into(),
+        unit: "шт".into(),
+    };
+    cmd_pipeline
+        .execute(&create_handler, &cmd, &ctx_a)
+        .await
+        .unwrap();
+
+    // Tenant B with the same role cannot see tenant A data
+    let ctx_b = catalog_manager_ctx();
+    let query = GetProductQuery {
+        sku: "TENANT-BOLT".into(),
+    };
+    let result = qry_pipeline.execute(&query_handler, &query, &ctx_b).await;
+    assert!(matches!(
+        result,
+        Err(kernel::AppError::Domain(kernel::DomainError::NotFound(_)))
+    ));
+
+    cleanup_tenant(&pool, ctx_a.tenant_id).await;
+    cleanup_tenant(&pool, ctx_b.tenant_id).await;
+}
+
+// ─── Test 6: Cross-context E2E — ProductCreated → warehouse projection ──────
 
 #[tokio::test]
 async fn cross_context_product_projection() {
@@ -206,8 +371,8 @@ async fn cross_context_product_projection() {
 
     // Build pipeline with this bus
     let uow_factory = Arc::new(db::PgUnitOfWorkFactory::new(pool.clone()));
-    let perm_map = auth::rbac::default_erp_permissions();
-    let checker = Arc::new(auth::checker::JwtPermissionChecker::new(perm_map));
+    let registry = test_support::test_permission_registry();
+    let checker = Arc::new(auth::checker::JwtPermissionChecker::new(registry));
     let audit_log = Arc::new(audit::PgAuditLog::new(pool.clone()));
     let pipeline = CommandPipeline::new(
         uow_factory,
@@ -217,7 +382,7 @@ async fn cross_context_product_projection() {
         audit_log,
     );
 
-    let create_handler = CreateProductHandler::new(pool.clone());
+    let create_handler = CreateProductHandler::new();
     let ctx = catalog_manager_ctx();
 
     // 1. Create product in catalog
@@ -230,34 +395,31 @@ async fn cross_context_product_projection() {
     pipeline.execute(&create_handler, &cmd, &ctx).await.unwrap();
 
     // 2. Run outbox relay → publish_and_wait → warehouse handler upserts projection
-    let relay = db::OutboxRelay::new(pool.clone(), bus, Duration::from_millis(100), 10);
+    let relay = db::OutboxRelay::new(pool.clone(), bus, Duration::from_millis(100), 10, tokio_util::sync::CancellationToken::new());
     let _ = relay.poll_and_publish().await;
 
     // 3. Verify projection exists in warehouse schema
-    let client = pool.get().await.unwrap();
-    let row = client
-        .query_one(
-            "SELECT name FROM warehouse.product_projections \
-             WHERE tenant_id = $1 AND sku = $2",
-            &[ctx.tenant_id.as_uuid(), &"CROSS-BOLT"],
-        )
-        .await
-        .unwrap();
-    let name: String = row.get(0);
+    let name = test_support::tenant_query(&pool, ctx.tenant_id, |client| Box::pin(async move {
+        let row = client
+            .query_one(
+                "SELECT name FROM warehouse.product_projections \
+                 WHERE tenant_id = $1 AND sku = $2",
+                &[ctx.tenant_id.as_uuid(), &"CROSS-BOLT"],
+            )
+            .await
+            .unwrap();
+        let name: String = row.get(0);
+        name
+    })).await;
     assert_eq!(name, "Болт кросс-контекст");
 
-    // Cleanup
-    client
-        .execute(
-            "DELETE FROM warehouse.product_projections WHERE tenant_id = $1",
-            &[ctx.tenant_id.as_uuid()],
-        )
-        .await
-        .ok();
-    client
-        .execute("DELETE FROM common.inbox WHERE event_id IN (SELECT event_id FROM common.outbox WHERE tenant_id = $1)", &[ctx.tenant_id.as_uuid()])
-        .await
-        .ok();
+    // Cleanup cross-context tables + catalog tables
+    cleanup_tenant_rows(
+        &pool,
+        ctx.tenant_id,
+        &["warehouse.product_projections"],
+    )
+    .await;
     cleanup_tenant(&pool, ctx.tenant_id).await;
 }
 
@@ -286,8 +448,8 @@ async fn get_balance_enriched_with_product_name() {
         .await;
 
     let uow_factory = Arc::new(db::PgUnitOfWorkFactory::new(pool.clone()));
-    let perm_map = auth::rbac::default_erp_permissions();
-    let checker = Arc::new(auth::checker::JwtPermissionChecker::new(perm_map));
+    let registry = test_support::test_permission_registry();
+    let checker = Arc::new(auth::checker::JwtPermissionChecker::new(registry));
     let audit_log = Arc::new(audit::PgAuditLog::new(pool.clone()));
     let pipeline = CommandPipeline::new(
         uow_factory,
@@ -302,7 +464,7 @@ async fn get_balance_enriched_with_product_name() {
     ctx.roles = vec!["admin".to_string()];
 
     // 1. Create product in catalog
-    let create_handler = CreateProductHandler::new(pool.clone());
+    let create_handler = CreateProductHandler::new();
     let cmd = CreateProductCommand {
         sku: "ENRICH-BOLT".into(),
         name: "Болт обогащённый".into(),
@@ -312,7 +474,7 @@ async fn get_balance_enriched_with_product_name() {
     pipeline.execute(&create_handler, &cmd, &ctx).await.unwrap();
 
     // 2. Relay → publish_and_wait → projection upserted
-    let relay = db::OutboxRelay::new(pool.clone(), bus, Duration::from_millis(100), 10);
+    let relay = db::OutboxRelay::new(pool.clone(), bus, Duration::from_millis(100), 10, tokio_util::sync::CancellationToken::new());
     let _ = relay.poll_and_publish().await;
 
     // 3. Receive goods in warehouse (need new ctx for fresh correlation_id)
@@ -320,7 +482,7 @@ async fn get_balance_enriched_with_product_name() {
     ctx2.roles = vec!["admin".to_string()];
 
     let receive_handler =
-        warehouse::application::commands::receive_goods::ReceiveGoodsHandler::new(pool.clone());
+        warehouse::application::commands::receive_goods::ReceiveGoodsHandler::new();
     let receive_cmd = warehouse::application::commands::receive_goods::ReceiveGoodsCommand {
         sku: "ENRICH-BOLT".into(),
         quantity: BigDecimal::from(100),
@@ -340,44 +502,18 @@ async fn get_balance_enriched_with_product_name() {
     assert_eq!(balance.balance, BigDecimal::from(100));
     assert_eq!(balance.product_name.as_deref(), Some("Болт обогащённый"));
 
-    // Cleanup
-    let client = pool.get().await.unwrap();
-    let tid = ctx.tenant_id.as_uuid();
-    client
-        .execute(
-            "DELETE FROM warehouse.product_projections WHERE tenant_id = $1",
-            &[tid],
-        )
-        .await
-        .ok();
-    client
-        .execute(
-            "DELETE FROM warehouse.inventory_balances WHERE tenant_id = $1",
-            &[tid],
-        )
-        .await
-        .ok();
-    client
-        .execute(
-            "DELETE FROM warehouse.stock_movements WHERE tenant_id = $1",
-            &[tid],
-        )
-        .await
-        .ok();
-    client
-        .execute(
-            "DELETE FROM warehouse.inventory_items WHERE tenant_id = $1",
-            &[tid],
-        )
-        .await
-        .ok();
-    client
-        .execute("DELETE FROM common.sequences WHERE tenant_id = $1", &[tid])
-        .await
-        .ok();
-    client
-        .execute("DELETE FROM common.inbox WHERE event_id IN (SELECT event_id FROM common.outbox WHERE tenant_id = $1)", &[tid])
-        .await
-        .ok();
+    // Cleanup cross-context tables + catalog tables
+    cleanup_tenant_rows(
+        &pool,
+        ctx.tenant_id,
+        &[
+            "warehouse.inventory_balances",
+            "warehouse.stock_movements",
+            "warehouse.inventory_items",
+            "warehouse.product_projections",
+            "common.sequences",
+        ],
+    )
+    .await;
     cleanup_tenant(&pool, ctx.tenant_id).await;
 }

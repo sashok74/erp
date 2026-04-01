@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use event_bus::traits::EventBus;
+use kernel::security::PermissionRegistrar;
 use kernel::types::{RequestContext, TenantId, UserId};
 use runtime::pipeline::CommandPipeline;
 use runtime::query_pipeline::QueryPipeline;
@@ -50,14 +51,24 @@ pub fn request_context(roles: &[&str]) -> RequestContext {
     ctx
 }
 
+/// Build a `PermissionRegistry` from real BC manifests (warehouse + catalog).
+pub fn test_permission_registry() -> Arc<auth::PermissionRegistry> {
+    let wh = warehouse::registrar::WarehousePermissions.permission_manifest();
+    let cat = catalog::registrar::CatalogPermissions.permission_manifest();
+
+    Arc::new(
+        auth::PermissionRegistry::from_manifests_validated(vec![wh, cat])
+            .expect("test manifests must be valid"),
+    )
+}
+
 pub fn command_pipeline(
     pool: Arc<db::PgPool>,
     bus: Arc<dyn EventBus>,
 ) -> CommandPipeline<db::PgUnitOfWorkFactory> {
     let uow_factory = Arc::new(db::PgUnitOfWorkFactory::new(pool.clone()));
-    let checker = Arc::new(auth::checker::JwtPermissionChecker::new(
-        auth::rbac::default_erp_permissions(),
-    ));
+    let registry = test_permission_registry();
+    let checker = Arc::new(auth::JwtPermissionChecker::new(registry));
     let audit = Arc::new(audit::PgAuditLog::new(pool));
 
     CommandPipeline::new(
@@ -70,25 +81,51 @@ pub fn command_pipeline(
 }
 
 pub fn query_pipeline(pool: Arc<db::PgPool>) -> QueryPipeline {
-    let checker = Arc::new(auth::checker::JwtPermissionChecker::new(
-        auth::rbac::default_erp_permissions(),
-    ));
+    let registry = test_permission_registry();
+    let checker = Arc::new(auth::JwtPermissionChecker::new(registry));
     let audit = Arc::new(audit::PgAuditLog::new(pool));
 
     QueryPipeline::new(checker, Arc::new(NoopExtensionHooks), audit)
 }
 
+/// Run a closure inside a tenant-scoped read TX (for test assertions).
+///
+/// `BEGIN READ ONLY` → `SET LOCAL tenant_id` → closure → `COMMIT`.
+pub async fn tenant_query<T: Send>(
+    pool: &db::PgPool,
+    tenant_id: TenantId,
+    f: impl for<'a> FnOnce(
+        &'a deadpool_postgres::Client,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>,
+) -> T {
+    let client = pool.get().await.expect("pool checkout");
+    client
+        .batch_execute("BEGIN READ ONLY")
+        .await
+        .expect("begin");
+    db::rls::set_tenant_context(&**client, tenant_id)
+        .await
+        .expect("set tenant");
+    let result = f(&client).await;
+    let _ = client.batch_execute("COMMIT").await;
+    result
+}
+
+/// Delete tenant data from specified tables (inside TX with RLS context).
 pub async fn cleanup_tenant(pool: &db::PgPool, tenant_id: TenantId, tables: &[&str]) {
-    let client = pool.get().await.expect("failed to get DB client");
-    let tenant_uuid = tenant_id.as_uuid();
+    let client = pool.get().await.expect("pool checkout");
+    client.batch_execute("BEGIN").await.expect("begin");
+    db::rls::set_tenant_context(&**client, tenant_id)
+        .await
+        .expect("set tenant");
 
     for table in tables {
+        let sql = format!("DELETE FROM {table} WHERE tenant_id = $1");
         client
-            .execute(
-                &format!("DELETE FROM {table} WHERE tenant_id = $1"),
-                &[tenant_uuid],
-            )
+            .execute(&sql, &[tenant_id.as_uuid()])
             .await
-            .unwrap_or_else(|err| panic!("failed to cleanup tenant data in {table}: {err}"));
+            .unwrap_or_else(|e| panic!("cleanup {table}: {e}"));
     }
+
+    client.batch_execute("COMMIT").await.expect("commit");
 }
