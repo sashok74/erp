@@ -87,8 +87,7 @@ mod tests {
         for cmd in &viewer_grant.commands {
             assert!(
                 cmd.contains(".get_"),
-                "viewer grant '{}' should be a query action",
-                cmd
+                "viewer grant '{cmd}' should be a query action",
             );
         }
     }

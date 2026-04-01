@@ -203,13 +203,6 @@ mod tests {
     }
 
     impl SpyExtensionHooks {
-        fn accepting() -> Self {
-            Self {
-                before_called: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                reject: false,
-            }
-        }
-
         fn rejecting() -> Self {
             Self {
                 before_called: Arc::new(std::sync::atomic::AtomicBool::new(false)),

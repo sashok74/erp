@@ -12,7 +12,7 @@ use runtime::ports::UnitOfWork;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::application::repos::ProductRepo;
+use crate::db::CatalogDb;
 use crate::domain::aggregates::Product;
 use crate::domain::errors::CatalogDomainError;
 use crate::domain::value_objects::{ProductName, Sku};
@@ -66,10 +66,10 @@ impl CommandHandler for CreateProductHandler {
 
         // 2. Downcast UoW → PgCommandContext
         let mut db = PgCommandContext::from_uow(uow)?;
-        let repo = ProductRepo::new(db.client(), ctx.tenant_id);
+        let cat = CatalogDb::new(db.client(), ctx.tenant_id);
 
         // 3. Check duplicate
-        if repo.find_by_sku(sku.as_str()).await?.is_some() {
+        if cat.products.find_by_sku(sku.as_str()).await?.is_some() {
             return Err(CatalogDomainError::DuplicateSku(cmd.sku.clone()).into());
         }
 
@@ -85,14 +85,15 @@ impl CommandHandler for CreateProductHandler {
         );
 
         // 5. Persist
-        repo.create_product(
-            *product_id.as_uuid(),
-            sku.as_str(),
-            product.name().as_str(),
-            product.category(),
-            product.unit(),
-        )
-        .await?;
+        cat.products
+            .create_product(
+                product_id.as_uuid(),
+                sku.as_str(),
+                product.name().as_str(),
+                product.category(),
+                product.unit(),
+            )
+            .await?;
 
         // 6. Domain history (deferred — flush в commit)
         let new_state = serde_json::json!({

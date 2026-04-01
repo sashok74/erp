@@ -111,7 +111,6 @@ async fn concurrent_calls_gap_free() {
     let mut handles = Vec::new();
     for _ in 0..10 {
         let pool = pool.clone();
-        let tenant = tenant;
         handles.push(tokio::spawn(async move {
             let client = pool.get().await.unwrap();
             client.batch_execute("BEGIN").await.unwrap();

@@ -11,7 +11,7 @@ use kernel::types::TenantId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::application::repos::InventoryRepo;
+use crate::db::WarehouseDb;
 
 /// Локальное представление события `ProductCreated` из Catalog BC.
 ///
@@ -56,14 +56,15 @@ impl event_bus::traits::EventHandler for ProductCreatedHandler {
         let event = event.clone();
         db::with_tenant_write(&self.pool, TenantId::from_uuid(event.tenant_id), |client| {
             Box::pin(async move {
-                let repo = InventoryRepo::new(client, TenantId::from_uuid(event.tenant_id));
-                repo.upsert_product_projection(
-                    event.product_id,
-                    &event.sku,
-                    &event.name,
-                    &event.category,
-                )
-                .await?;
+                let wh = WarehouseDb::new(client, TenantId::from_uuid(event.tenant_id));
+                wh.projections
+                    .upsert_product_projection(
+                        &event.product_id,
+                        &event.sku,
+                        &event.name,
+                        &event.category,
+                    )
+                    .await?;
 
                 tracing::info!(
                     sku = %event.sku,

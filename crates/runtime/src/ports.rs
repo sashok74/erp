@@ -144,12 +144,12 @@ mod tests {
     fn _assert_extension_hooks_object_safe(_: Arc<dyn ExtensionHooks>) {}
     fn _assert_unit_of_work_object_safe(_: Box<dyn UnitOfWork>) {}
 
-    fn _assert_send_sync<T: Send + Sync + 'static>() {}
+    fn assert_send_sync<T: Send + Sync + 'static>() {}
 
     #[test]
     fn traits_are_object_safe_and_send_sync() {
-        _assert_send_sync::<Arc<dyn PermissionChecker>>();
-        _assert_send_sync::<Arc<dyn AuditLog>>();
-        _assert_send_sync::<Arc<dyn ExtensionHooks>>();
+        assert_send_sync::<Arc<dyn PermissionChecker>>();
+        assert_send_sync::<Arc<dyn AuditLog>>();
+        assert_send_sync::<Arc<dyn ExtensionHooks>>();
     }
 }

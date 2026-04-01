@@ -10,7 +10,7 @@ use runtime::query_handler::QueryHandler;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::application::repos::ProductRepo;
+use crate::db::CatalogDb;
 
 /// Запрос товара по SKU.
 #[derive(Debug)]
@@ -57,9 +57,9 @@ impl QueryHandler for GetProductHandler {
         ctx: &RequestContext,
     ) -> Result<Self::Result, AppError> {
         let read = db::ReadScope::acquire(&self.pool, ctx.tenant_id).await?;
-        let repo = ProductRepo::new(read.client(), ctx.tenant_id);
+        let cat = CatalogDb::new(read.client(), ctx.tenant_id);
 
-        let row = repo.find_by_sku(&query.sku).await?;
+        let row = cat.products.find_by_sku(&query.sku).await?;
         read.finish().await?;
 
         match row {

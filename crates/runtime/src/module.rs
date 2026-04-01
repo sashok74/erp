@@ -27,14 +27,32 @@ pub trait BoundedContextModule: Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
+
     use super::*;
 
-    fn _assert_object_safe(_: Box<dyn BoundedContextModule>) {}
+    struct StubModule;
 
-    fn _assert_send_sync<T: Send + Sync + 'static>() {}
+    #[async_trait]
+    impl BoundedContextModule for StubModule {
+        fn name(&self) -> &'static str {
+            "stub"
+        }
+
+        fn migrations_dir(&self) -> &'static str {
+            "migrations/stub"
+        }
+
+        async fn register_handlers(&self, _bus: &dyn EventBus) {}
+    }
+
+    fn assert_object_safe(_: Box<dyn BoundedContextModule>) {}
+
+    fn assert_send_sync<T: Send + Sync + 'static>() {}
 
     #[test]
     fn bounded_context_module_is_object_safe_and_send_sync() {
-        _assert_send_sync::<Box<dyn BoundedContextModule>>();
+        assert_object_safe(Box::new(StubModule));
+        assert_send_sync::<Box<dyn BoundedContextModule>>();
     }
 }

@@ -13,7 +13,7 @@ use runtime::ports::UnitOfWork;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::application::repos::InventoryRepo;
+use crate::db::WarehouseDb;
 use crate::domain::aggregates::InventoryItem;
 use crate::domain::value_objects::{Quantity, Sku};
 
@@ -69,14 +69,16 @@ impl CommandHandler for ReceiveGoodsHandler {
         let mut db = PgCommandContext::from_uow(uow)?;
 
         // 3-6. Repo operations (scoped to drop repo before db.record_change)
-        let repo = InventoryRepo::new(db.client(), ctx.tenant_id);
+        let wh = WarehouseDb::new(db.client(), ctx.tenant_id);
 
         let (item_id, old_balance) =
-            if let Some((id, balance)) = repo.find_by_sku(sku.as_str()).await? {
-                (id, balance)
+            if let Some(row) = wh.inventory.find_item_by_sku(sku.as_str()).await? {
+                (row.id, row.balance)
             } else {
                 let new_id = EntityId::new();
-                repo.create_item(*new_id.as_uuid(), sku.as_str()).await?;
+                wh.inventory
+                    .create_item(new_id.as_uuid(), sku.as_str())
+                    .await?;
                 (*new_id.as_uuid(), BigDecimal::from(0))
             };
 
@@ -100,19 +102,20 @@ impl CommandHandler for ReceiveGoodsHandler {
         let movement_id = Uuid::now_v7();
 
         // 6. Repo: save movement + upsert balance
-        repo.save_movement(
-            movement_id,
+        let movement_input = crate::db::NewStockMovement {
+            id: movement_id,
             item_id,
-            "goods_received",
-            &event.quantity,
-            &event.new_balance,
-            &doc_number,
-            ctx.correlation_id,
-            *ctx.user_id.as_uuid(),
-        )
-        .await?;
+            event_type: "goods_received".to_string(),
+            quantity: event.quantity.clone(),
+            balance_after: event.new_balance.clone(),
+            doc_number: doc_number.clone(),
+            correlation_id: ctx.correlation_id,
+            user_id: *ctx.user_id.as_uuid(),
+        };
+        wh.inventory.insert_movement(&movement_input).await?;
 
-        repo.upsert_balance(item_id, sku.as_str(), &event.new_balance, movement_id)
+        wh.balances
+            .upsert_balance(&item_id, sku.as_str(), &event.new_balance, &movement_id)
             .await?;
 
         // 7. Domain history: old → new state (deferred — flush в commit)

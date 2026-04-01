@@ -70,11 +70,11 @@ mod tests {
     fn _assert_event_bus_object_safe(_bus: Arc<dyn EventBus>) {}
 
     // Проверяем что трейты имеют правильные bounds
-    fn _assert_send_sync<T: Send + Sync + 'static>() {}
+    fn assert_send_sync<T: Send + Sync + 'static>() {}
 
     #[test]
     fn traits_compile_with_correct_bounds() {
         // If this compiles, bounds are correct
-        _assert_send_sync::<Arc<dyn EventBus>>();
+        assert_send_sync::<Arc<dyn EventBus>>();
     }
 }

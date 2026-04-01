@@ -15,6 +15,7 @@ members = [
     "crates/catalog",
     "crates/test_support",
     "crates/gateway",
+    "crates/repo_gen",
 ]
 
 [workspace.package]

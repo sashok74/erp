@@ -1,0 +1,18 @@
+[package]
+name = "repo_gen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "repo-gen"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+syn = { version = "2", features = ["full", "extra-traits", "visit"] }
+proc-macro2 = "1"
+quote = "1"
+heck = "0.5"

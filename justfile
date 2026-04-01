@@ -49,11 +49,23 @@ db-reset:
      createdb "$( echo $DATABASE_URL | sed 's|.*/||' )" 2>/dev/null; \
      echo "БД пересоздана. Запустите 'just run' для применения миграций."
 
+# Полная генерация: clorinde → repo-gen → fmt
+generate:
+    clorinde live \
+      -q queries/ \
+      -d crates/clorinde-gen/ \
+      "$DATABASE_URL"
+    cargo run -p repo_gen -- --all
+    cargo fmt --all
+    @echo "Generation complete (clorinde + repo-gen)"
+
+# Только clorinde (без repo-gen), для отладки SQL
 clorinde-generate:
-    clorinde generate \
-      --queries-path queries/ \
-      --destination crates/clorinde-gen/
-    @echo "Clorinde crate regenerated"
+    clorinde live \
+      -q queries/ \
+      -d crates/clorinde-gen/ \
+      "$DATABASE_URL"
+    @echo "Clorinde crate regenerated (run 'just generate' for full pipeline)"
 
 # === Запуск ===
 

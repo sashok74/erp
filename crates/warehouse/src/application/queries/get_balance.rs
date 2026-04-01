@@ -11,7 +11,7 @@ use runtime::query_handler::QueryHandler;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::application::repos::InventoryRepo;
+use crate::db::WarehouseDb;
 
 /// Запрос баланса по SKU.
 #[derive(Debug)]
@@ -57,10 +57,10 @@ impl QueryHandler for GetBalanceHandler {
         ctx: &RequestContext,
     ) -> Result<Self::Result, AppError> {
         let read = db::ReadScope::acquire(&self.pool, ctx.tenant_id).await?;
-        let repo = InventoryRepo::new(read.client(), ctx.tenant_id);
+        let wh = WarehouseDb::new(read.client(), ctx.tenant_id);
 
-        let row = repo.get_balance(&query.sku).await?;
-        let projection = repo.get_product_projection(&query.sku).await?;
+        let row = wh.balances.get_balance(&query.sku).await?;
+        let projection = wh.projections.get_projection_by_sku(&query.sku).await?;
         read.finish().await?;
 
         let product_name = projection.map(|p| p.name);
