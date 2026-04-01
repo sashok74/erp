@@ -1,28 +1,28 @@
-//! `JwtPermissionChecker` — реализация `PermissionChecker` из `runtime::ports`.
+//! `JwtPermissionChecker` — `PermissionChecker` implementation backed by `PermissionRegistry`.
 //!
-//! Первая реальная подстановка адаптера вместо `NoopPermissionChecker`.
-//! Извлекает роли из `RequestContext.roles` (строки), конвертирует в `Role` enum,
-//! проверяет через `PermissionMap`.
+//! Extracts role strings from `RequestContext.roles`, checks against the registry.
+//! Unknown roles are denied by default (no match in grants).
+
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use kernel::{AppError, RequestContext};
 use runtime::ports::PermissionChecker;
 
-use crate::claims::Role;
-use crate::rbac::PermissionMap;
+use crate::registry::PermissionRegistry;
 
-/// RBAC-авторизация через JWT роли.
+/// RBAC authorization via `PermissionRegistry`.
 ///
-/// Подставляется в `CommandPipeline` вместо `NoopPermissionChecker`.
+/// Plugs into `CommandPipeline` and `QueryPipeline` as `Arc<dyn PermissionChecker>`.
 pub struct JwtPermissionChecker {
-    permission_map: PermissionMap,
+    registry: Arc<PermissionRegistry>,
 }
 
 impl JwtPermissionChecker {
-    /// Создать checker с указанным маппингом ролей.
+    /// Create checker backed by a permission registry.
     #[must_use]
-    pub fn new(permission_map: PermissionMap) -> Self {
-        Self { permission_map }
+    pub fn new(registry: Arc<PermissionRegistry>) -> Self {
+        Self { registry }
     }
 }
 
@@ -33,13 +33,7 @@ impl PermissionChecker for JwtPermissionChecker {
         ctx: &RequestContext,
         command_name: &str,
     ) -> Result<(), AppError> {
-        let roles: Vec<Role> = ctx
-            .roles
-            .iter()
-            .filter_map(|s| Role::from_str_opt(s))
-            .collect();
-
-        if self.permission_map.is_allowed(&roles, command_name) {
+        if self.registry.is_allowed(&ctx.roles, command_name) {
             Ok(())
         } else {
             Err(AppError::Unauthorized(format!(
@@ -52,8 +46,64 @@ impl PermissionChecker for JwtPermissionChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rbac::default_erp_permissions;
+    use kernel::security::{PermissionDef, PermissionManifest, RoleDef, RoleGrant};
     use kernel::types::{TenantId, UserId};
+
+    fn test_registry() -> Arc<PermissionRegistry> {
+        let wh = PermissionManifest {
+            bc_code: "warehouse".into(),
+            roles: vec![
+                RoleDef {
+                    code: "warehouse_manager".into(),
+                    display_name_ru: "Менеджер склада".into(),
+                    display_name_en: None,
+                    is_superadmin: false,
+                    security_level: 2,
+                },
+                RoleDef {
+                    code: "warehouse_operator".into(),
+                    display_name_ru: "Кладовщик".into(),
+                    display_name_en: None,
+                    is_superadmin: false,
+                    security_level: 1,
+                },
+            ],
+            permissions: vec![
+                PermissionDef {
+                    command: "warehouse.receive_goods".into(),
+                    display_name_ru: "Приёмка".into(),
+                    display_name_en: None,
+                    category: None,
+                },
+                PermissionDef {
+                    command: "warehouse.get_balance".into(),
+                    display_name_ru: "Остатки".into(),
+                    display_name_en: None,
+                    category: None,
+                },
+            ],
+            grants: vec![
+                RoleGrant {
+                    role_code: "warehouse_manager".into(),
+                    commands: vec!["warehouse.*".into()],
+                },
+                RoleGrant {
+                    role_code: "warehouse_operator".into(),
+                    commands: vec![
+                        "warehouse.receive_goods".into(),
+                        "warehouse.get_balance".into(),
+                    ],
+                },
+                RoleGrant {
+                    role_code: "viewer".into(),
+                    commands: vec!["warehouse.get_balance".into()],
+                },
+            ],
+        };
+        Arc::new(
+            PermissionRegistry::from_manifests_validated(vec![wh]).unwrap(),
+        )
+    }
 
     fn ctx_with_roles(roles: &[&str]) -> RequestContext {
         let mut ctx = RequestContext::new(TenantId::new(), UserId::new());
@@ -63,7 +113,7 @@ mod tests {
 
     #[tokio::test]
     async fn admin_allowed() {
-        let checker = JwtPermissionChecker::new(default_erp_permissions());
+        let checker = JwtPermissionChecker::new(test_registry());
         let ctx = ctx_with_roles(&["admin"]);
         assert!(
             checker
@@ -75,7 +125,7 @@ mod tests {
 
     #[tokio::test]
     async fn operator_allowed_warehouse() {
-        let checker = JwtPermissionChecker::new(default_erp_permissions());
+        let checker = JwtPermissionChecker::new(test_registry());
         let ctx = ctx_with_roles(&["warehouse_operator"]);
         assert!(
             checker
@@ -87,7 +137,7 @@ mod tests {
 
     #[tokio::test]
     async fn operator_denied_finance() {
-        let checker = JwtPermissionChecker::new(default_erp_permissions());
+        let checker = JwtPermissionChecker::new(test_registry());
         let ctx = ctx_with_roles(&["warehouse_operator"]);
         let err = checker
             .check_permission(&ctx, "finance.post_journal")
@@ -97,8 +147,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_role_ignored() {
-        let checker = JwtPermissionChecker::new(default_erp_permissions());
+    async fn unknown_role_denied() {
+        let checker = JwtPermissionChecker::new(test_registry());
         let ctx = ctx_with_roles(&["unknown_role"]);
         let err = checker
             .check_permission(&ctx, "warehouse.receive_goods")
@@ -107,68 +157,38 @@ mod tests {
         assert!(matches!(err, AppError::Unauthorized(_)));
     }
 
-    // ─── Fixtures for integration test ─────────────────────────────
-
-    #[derive(Debug)]
-    struct PipelineTestCmd;
-    impl kernel::Command for PipelineTestCmd {
-        fn command_name(&self) -> &'static str {
-            "warehouse.receive_goods"
-        }
-    }
-
-    #[derive(Debug, serde::Serialize)]
-    struct PipelineTestResult {
-        ok: bool,
-    }
-
-    struct PipelineTestHandler;
-
-    #[async_trait::async_trait]
-    impl runtime::command_handler::CommandHandler for PipelineTestHandler {
-        type Cmd = PipelineTestCmd;
-        type Result = PipelineTestResult;
-
-        async fn handle(
-            &self,
-            _cmd: &Self::Cmd,
-            _ctx: &RequestContext,
-            _uow: &mut dyn runtime::ports::UnitOfWork,
-        ) -> Result<Self::Result, AppError> {
-            Ok(PipelineTestResult { ok: true })
-        }
+    #[tokio::test]
+    async fn viewer_query_allowed() {
+        let checker = JwtPermissionChecker::new(test_registry());
+        let ctx = ctx_with_roles(&["viewer"]);
+        assert!(
+            checker
+                .check_permission(&ctx, "warehouse.get_balance")
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
-    async fn integration_with_pipeline() {
-        use runtime::pipeline::CommandPipeline;
-        use runtime::stubs::{InMemoryUnitOfWorkFactory, NoopAuditLog, NoopExtensionHooks};
-        use std::sync::Arc;
+    async fn viewer_command_denied() {
+        let checker = JwtPermissionChecker::new(test_registry());
+        let ctx = ctx_with_roles(&["viewer"]);
+        let err = checker
+            .check_permission(&ctx, "warehouse.receive_goods")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::Unauthorized(_)));
+    }
 
-        let uow_factory = Arc::new(InMemoryUnitOfWorkFactory::new());
-        let bus = Arc::new(event_bus::InProcessBus::new());
-        let checker = Arc::new(JwtPermissionChecker::new(default_erp_permissions()));
-
-        let pipeline = CommandPipeline::new(
-            uow_factory,
-            bus,
-            checker,
-            Arc::new(NoopExtensionHooks),
-            Arc::new(NoopAuditLog),
+    #[tokio::test]
+    async fn multiple_roles_union() {
+        let checker = JwtPermissionChecker::new(test_registry());
+        let ctx = ctx_with_roles(&["viewer", "warehouse_operator"]);
+        assert!(
+            checker
+                .check_permission(&ctx, "warehouse.receive_goods")
+                .await
+                .is_ok()
         );
-
-        // Unauthorized user → Err
-        let unauthorized_ctx = ctx_with_roles(&["viewer"]);
-        let result = pipeline
-            .execute(&PipelineTestHandler, &PipelineTestCmd, &unauthorized_ctx)
-            .await;
-        assert!(matches!(result, Err(AppError::Unauthorized(_))));
-
-        // Authorized user → Ok
-        let authorized_ctx = ctx_with_roles(&["warehouse_operator"]);
-        let result = pipeline
-            .execute(&PipelineTestHandler, &PipelineTestCmd, &authorized_ctx)
-            .await;
-        assert!(result.is_ok());
     }
 }
