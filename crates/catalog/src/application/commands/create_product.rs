@@ -12,7 +12,7 @@ use runtime::ports::UnitOfWork;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::application::ports::ProductRepo;
+use crate::application::repos::ProductRepo;
 use crate::domain::aggregates::Product;
 use crate::domain::errors::CatalogDomainError;
 use crate::domain::value_objects::{ProductName, Sku};

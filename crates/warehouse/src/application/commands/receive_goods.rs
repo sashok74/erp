@@ -13,7 +13,7 @@ use runtime::ports::UnitOfWork;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::application::ports::InventoryRepo;
+use crate::application::repos::InventoryRepo;
 use crate::domain::aggregates::InventoryItem;
 use crate::domain::value_objects::{Quantity, Sku};
 

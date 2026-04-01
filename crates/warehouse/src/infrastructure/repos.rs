@@ -1,6 +1,6 @@
 //! Реализации persistence для `InventoryRepo` через `clorinde_gen`.
 //!
-//! Split impl: struct определён в `application::ports`,
+//! Split impl: struct определён в `application::repos`,
 //! методы реализованы здесь через clorinde SQL.
 //! Все методы — `&self`, `client` и `tenant_id` берутся из repo.
 
@@ -11,7 +11,7 @@ use db::{repo_exec, repo_opt};
 use kernel::{AppError, IntoInternal};
 use uuid::Uuid;
 
-use crate::application::ports::{BalanceRow, InventoryRepo, ProductProjectionRow};
+use crate::application::repos::{BalanceRow, InventoryRepo, ProductProjectionRow};
 
 impl InventoryRepo<'_> {
     /// Найти товар по SKU. Возвращает (`item_id`, balance).

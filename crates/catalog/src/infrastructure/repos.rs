@@ -1,12 +1,12 @@
 //! Реализации persistence для `ProductRepo` через `clorinde_gen`.
 //!
-//! Split impl: struct определён в `application::ports`,
+//! Split impl: struct определён в `application::repos`,
 //! методы реализованы здесь через clorinde SQL.
 
 use db::{repo_exec, repo_opt};
 use uuid::Uuid;
 
-use crate::application::ports::{ProductRepo, ProductRow};
+use crate::application::repos::{ProductRepo, ProductRow};
 
 impl ProductRepo<'_> {
     repo_opt! {

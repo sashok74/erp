@@ -11,7 +11,7 @@ use kernel::types::TenantId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::application::ports::InventoryRepo;
+use crate::application::repos::InventoryRepo;
 
 /// Локальное представление события `ProductCreated` из Catalog BC.
 ///

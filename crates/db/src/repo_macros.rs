@@ -153,8 +153,8 @@ macro_rules! repo_one {
                 .internal(stringify!($name))?;
             match row {
                 Some($row) => Ok($body),
-                None => Err(::kernel::AppError::Internal(
-                    format!("{}: expected exactly one row", stringify!($name))
+                None => Err(::kernel::AppError::Domain(
+                    ::kernel::DomainError::NotFound(stringify!($name).to_string())
                 )),
             }
         }

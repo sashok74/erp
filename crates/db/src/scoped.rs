@@ -1,14 +1,9 @@
-//! Scoped transaction helpers — closure-based `BEGIN` + `SET LOCAL` + `COMMIT`/`ROLLBACK`.
+//! Scoped transaction helpers для tenant-isolated DB доступа.
+//!
+//! - [`ReadScope`] — guard для read-only запросов (acquire → auto-rollback on drop)
+//! - [`with_tenant_write`] — closure-based write TX для event handlers
 //!
 //! Гарантируют, что `SET LOCAL app.tenant_id` всегда выполняется внутри транзакции.
-//! Разработчику не нужно думать о `BEGIN`/`COMMIT` — обёртка делает всё сама.
-//!
-//! ```ignore
-//! db::with_tenant_read(&pool, ctx.tenant_id, |client| Box::pin(async move {
-//!     let row = Repo::find(client, ctx.tenant_id, &sku).await?;
-//!     Ok(row)
-//! })).await
-//! ```
 
 use std::future::Future;
 use std::pin::Pin;
@@ -19,43 +14,45 @@ use kernel::{AppError, IntoInternal};
 use crate::pool::PgPool;
 use crate::rls::set_tenant_context;
 
-/// Read-only transaction с tenant isolation.
+/// Guard для read-only запросов с tenant isolation.
 ///
-/// `BEGIN READ ONLY` → `SET LOCAL tenant_id` → closure → `COMMIT`/`ROLLBACK`.
+/// `BEGIN READ ONLY` + `SET LOCAL tenant_id` при acquire.
+/// Read-only TX безопасно откатывается при drop (нет side effects).
 ///
-/// Используется в query handler'ах. `READ ONLY` предотвращает случайные writes
-/// и позволяет `PostgreSQL` применять read-only оптимизации.
-///
-/// # Errors
-///
-/// Возвращает ошибку closure или `AppError::Internal` при проблемах с БД.
-pub async fn with_tenant_read<T>(
-    pool: &PgPool,
-    tenant_id: TenantId,
-    f: impl for<'a> FnOnce(
-        &'a deadpool_postgres::Client,
-    ) -> Pin<Box<dyn Future<Output = Result<T, AppError>> + Send + 'a>>,
-) -> Result<T, AppError> {
-    let client = pool.get().await.internal("pool checkout")?;
-    client
-        .batch_execute("BEGIN READ ONLY")
-        .await
-        .internal("begin read")?;
+/// ```ignore
+/// let read = ReadScope::acquire(&pool, ctx.tenant_id).await?;
+/// let repo = InventoryRepo::new(read.client(), ctx.tenant_id);
+/// let row = repo.get_balance(&sku).await?;
+/// // read dropped → ROLLBACK (safe for read-only TX)
+/// ```
+pub struct ReadScope {
+    client: deadpool_postgres::Client,
+}
 
-    if let Err(e) = set_tenant_context(&**client, tenant_id).await {
-        let _ = client.batch_execute("ROLLBACK").await;
-        return Err(AppError::Internal(format!("set tenant: {e}")));
+impl ReadScope {
+    /// Открыть read-only TX с tenant context.
+    ///
+    /// # Errors
+    ///
+    /// `AppError::Internal` при ошибке checkout'а, `BEGIN` или `SET LOCAL`.
+    pub async fn acquire(pool: &PgPool, tenant_id: TenantId) -> Result<Self, AppError> {
+        let client = pool.get().await.internal("pool checkout")?;
+        client
+            .batch_execute("BEGIN READ ONLY")
+            .await
+            .internal("begin read")?;
+
+        if let Err(e) = set_tenant_context(&**client, tenant_id).await {
+            let _ = client.batch_execute("ROLLBACK").await;
+            return Err(AppError::Internal(format!("set tenant: {e}")));
+        }
+
+        Ok(Self { client })
     }
 
-    match f(&client).await {
-        Ok(v) => {
-            let _ = client.batch_execute("COMMIT").await;
-            Ok(v)
-        }
-        Err(e) => {
-            let _ = client.batch_execute("ROLLBACK").await;
-            Err(e)
-        }
+    /// PostgreSQL-клиент внутри read-only TX с tenant context.
+    pub fn client(&self) -> &deadpool_postgres::Client {
+        &self.client
     }
 }
 

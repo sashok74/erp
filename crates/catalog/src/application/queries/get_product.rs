@@ -1,6 +1,6 @@
 //! `GetProductQuery` — запрос товара по SKU.
 //!
-//! Read-only, внутри `BEGIN READ ONLY` + RLS.
+//! Read-only, внутри `BEGIN READ ONLY` + RLS через `ReadScope`.
 
 use std::sync::Arc;
 
@@ -10,7 +10,7 @@ use runtime::query_handler::QueryHandler;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::application::ports::ProductRepo;
+use crate::application::repos::ProductRepo;
 
 /// Запрос товара по SKU.
 #[derive(Debug)]
@@ -56,28 +56,23 @@ impl QueryHandler for GetProductHandler {
         query: &Self::Query,
         ctx: &RequestContext,
     ) -> Result<Self::Result, AppError> {
-        let tenant_id = ctx.tenant_id;
-        let sku = query.sku.clone();
+        let read = db::ReadScope::acquire(&self.pool, ctx.tenant_id).await?;
+        let repo = ProductRepo::new(read.client(), ctx.tenant_id);
 
-        db::with_tenant_read(&self.pool, tenant_id, |client| {
-            Box::pin(async move {
-                let repo = ProductRepo::new(client, tenant_id);
-                let row = repo.find_by_sku(&sku).await?;
+        let row = repo.find_by_sku(&query.sku).await?;
 
-                match row {
-                    Some(r) => Ok(ProductResult {
-                        product_id: r.id,
-                        sku: r.sku,
-                        name: r.name,
-                        category: r.category,
-                        unit: r.unit,
-                    }),
-                    None => Err(AppError::Domain(DomainError::NotFound(format!(
-                        "Product with SKU '{sku}'"
-                    )))),
-                }
-            })
-        })
-        .await
+        match row {
+            Some(r) => Ok(ProductResult {
+                product_id: r.id,
+                sku: r.sku,
+                name: r.name,
+                category: r.category,
+                unit: r.unit,
+            }),
+            None => Err(AppError::Domain(DomainError::NotFound(format!(
+                "Product with SKU '{}'",
+                query.sku
+            )))),
+        }
     }
 }

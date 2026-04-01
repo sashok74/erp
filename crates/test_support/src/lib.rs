@@ -121,10 +121,19 @@ pub async fn cleanup_tenant(pool: &db::PgPool, tenant_id: TenantId, tables: &[&s
 
     for table in tables {
         let sql = format!("DELETE FROM {table} WHERE tenant_id = $1");
-        client
-            .execute(&sql, &[tenant_id.as_uuid()])
-            .await
-            .unwrap_or_else(|e| panic!("cleanup {table}: {e}"));
+        if let Err(e) = client.execute(&sql, &[tenant_id.as_uuid()]).await {
+            // If TX is aborted, rollback and retry with fresh TX
+            let _ = client.batch_execute("ROLLBACK").await;
+            eprintln!("cleanup {table}: {e} (retrying with fresh TX)");
+            client.batch_execute("BEGIN").await.expect("begin retry");
+            db::rls::set_tenant_context(&**client, tenant_id)
+                .await
+                .expect("set tenant retry");
+            client
+                .execute(&sql, &[tenant_id.as_uuid()])
+                .await
+                .unwrap_or_else(|e2| panic!("cleanup {table} retry: {e2}"));
+        }
     }
 
     client.batch_execute("COMMIT").await.expect("commit");
