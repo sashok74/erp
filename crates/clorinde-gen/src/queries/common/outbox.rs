@@ -12,6 +12,11 @@ pub struct InsertOutboxEntryParams<T1: crate::StringSql, T2: crate::StringSql, T
     pub user_id: uuid::Uuid,
     pub created_at: chrono::DateTime<chrono::FixedOffset>,
 }
+#[derive(Debug)]
+pub struct MoveToDlqParams<T1: crate::StringSql> {
+    pub last_error: T1,
+    pub id: i64,
+}
 #[derive(Debug, Clone, PartialEq)]
 pub struct GetUnpublishedEvents {
     pub id: i64,
@@ -260,7 +265,15 @@ impl InsertOutboxEntryStmt {
         }
     }
 }
-impl<'c, 'a, 's, C: GenericClient, T1: crate::StringSql, T2: crate::StringSql, T3: crate::JsonSql>
+impl<
+        'c,
+        'a,
+        's,
+        C: GenericClient,
+        T1: crate::StringSql,
+        T2: crate::StringSql,
+        T3: crate::JsonSql,
+    >
     crate::client::async_::Params<
         'c,
         'a,
@@ -366,6 +379,75 @@ pub fn increment_retry() -> IncrementRetryStmt {
     )
 }
 impl IncrementRetryStmt {
+    pub async fn prepare<'a, C: GenericClient>(
+        mut self,
+        client: &'a C,
+    ) -> Result<Self, tokio_postgres::Error> {
+        self.1 = Some(client.prepare(self.0).await?);
+        Ok(self)
+    }
+    pub async fn bind<'c, 'a, 's, C: GenericClient>(
+        &'s self,
+        client: &'c C,
+        id: &'a i64,
+    ) -> Result<u64, tokio_postgres::Error> {
+        client.execute(self.0, &[id]).await
+    }
+}
+pub struct MoveToDlqStmt(&'static str, Option<tokio_postgres::Statement>);
+pub fn move_to_dlq() -> MoveToDlqStmt {
+    MoveToDlqStmt(
+        "INSERT INTO common.dead_letters (event_id, event_type, source, tenant_id, payload, correlation_id, causation_id, user_id, original_created_at, retry_count, last_error) SELECT event_id, event_type, source, tenant_id, payload, correlation_id, causation_id, user_id, created_at, retry_count, $1 FROM common.outbox WHERE id = $2",
+        None,
+    )
+}
+impl MoveToDlqStmt {
+    pub async fn prepare<'a, C: GenericClient>(
+        mut self,
+        client: &'a C,
+    ) -> Result<Self, tokio_postgres::Error> {
+        self.1 = Some(client.prepare(self.0).await?);
+        Ok(self)
+    }
+    pub async fn bind<'c, 'a, 's, C: GenericClient, T1: crate::StringSql>(
+        &'s self,
+        client: &'c C,
+        last_error: &'a T1,
+        id: &'a i64,
+    ) -> Result<u64, tokio_postgres::Error> {
+        client.execute(self.0, &[last_error, id]).await
+    }
+}
+impl<'a, C: GenericClient + Send + Sync, T1: crate::StringSql>
+    crate::client::async_::Params<
+        'a,
+        'a,
+        'a,
+        MoveToDlqParams<T1>,
+        std::pin::Pin<
+            Box<dyn futures::Future<Output = Result<u64, tokio_postgres::Error>> + Send + 'a>,
+        >,
+        C,
+    > for MoveToDlqStmt
+{
+    fn params(
+        &'a self,
+        client: &'a C,
+        params: &'a MoveToDlqParams<T1>,
+    ) -> std::pin::Pin<
+        Box<dyn futures::Future<Output = Result<u64, tokio_postgres::Error>> + Send + 'a>,
+    > {
+        Box::pin(self.bind(client, &params.last_error, &params.id))
+    }
+}
+pub struct MarkDlqStmt(&'static str, Option<tokio_postgres::Statement>);
+pub fn mark_dlq() -> MarkDlqStmt {
+    MarkDlqStmt(
+        "UPDATE common.outbox SET published = true, published_at = NOW() WHERE id = $1",
+        None,
+    )
+}
+impl MarkDlqStmt {
     pub async fn prepare<'a, C: GenericClient>(
         mut self,
         client: &'a C,

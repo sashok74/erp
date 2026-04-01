@@ -144,15 +144,15 @@ impl InsertDomainHistoryStmt {
     }
 }
 impl<
-    'c,
-    'a,
-    's,
-    C: GenericClient,
-    T1: crate::StringSql,
-    T2: crate::StringSql,
-    T3: crate::JsonSql,
-    T4: crate::JsonSql,
->
+        'c,
+        'a,
+        's,
+        C: GenericClient,
+        T1: crate::StringSql,
+        T2: crate::StringSql,
+        T3: crate::JsonSql,
+        T4: crate::JsonSql,
+    >
     crate::client::async_::Params<
         'c,
         'a,

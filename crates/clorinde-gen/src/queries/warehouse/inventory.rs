@@ -272,13 +272,13 @@ impl InsertMovementStmt {
     }
 }
 impl<
-    'a,
-    C: GenericClient + Send + Sync,
-    T1: crate::StringSql,
-    T2: crate::StringSql,
-    T3: crate::StringSql,
-    T4: crate::StringSql,
->
+        'a,
+        C: GenericClient + Send + Sync,
+        T1: crate::StringSql,
+        T2: crate::StringSql,
+        T3: crate::StringSql,
+        T4: crate::StringSql,
+    >
     crate::client::async_::Params<
         'a,
         'a,
