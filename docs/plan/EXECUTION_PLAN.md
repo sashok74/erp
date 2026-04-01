@@ -91,7 +91,7 @@ Kernel Cargo.toml: `sqlx` → `postgres-types = { workspace = true }`.
 
 ## Фаза 1 — PostgreSQL + реальный UnitOfWork
 
-**Статус:** next
+**Статус:** DONE -- PgPool, PgUnitOfWork, RLS, миграции common schema, Clorinde-запросы для платформенных таблиц
 **Crate:** `db`
 **Зависимости:** kernel, event_bus, tokio-postgres, deadpool-postgres, clorinde, refinery
 
@@ -155,7 +155,7 @@ pipeline.execute() с PgUoW = OK
 
 ## Фаза 2 — Outbox Relay + Audit Writer + SeqGen
 
-**Статус:** after phase 1
+**Статус:** DONE -- Outbox relay, inbox dedup, PgAuditLog, domain history, PgSequenceGenerator, dead letter queue
 
 ### Задачи
 
@@ -185,7 +185,7 @@ E2E: command → handler → outbox → COMMIT → relay → bus → subscriber 
 
 ## Фаза 3 — Warehouse Vertical Slice
 
-**Статус:** after phase 2
+**Статус:** DONE -- InventoryItem aggregate, ReceiveGoods command, GetBalance query, HTTP endpoints, integration tests
 **Crate:** `warehouse`
 
 ### Бизнес (минимальный)
@@ -282,9 +282,9 @@ curl -X POST /api/warehouse/receive \
 
 ---
 
-## Фаза 4 — Cross-Context: Catalog → Warehouse Projection
+## Фаза 4 — Cross-Context: Catalog -> Warehouse Projection
 
-**Статус:** after phase 3
+**Статус:** DONE -- Catalog BC (CreateProduct, GetProduct), cross-BC event projection, SKU validation in warehouse
 **Crates:** `catalog` (новый), `warehouse` (handler + projection)
 
 - Catalog: RegisterItem → ItemRegistered event
@@ -303,7 +303,7 @@ No dep warehouse → catalog in Cargo.toml
 
 ## Фаза 5 — Gateway Assembly + Queries
 
-**Статус:** after phase 4
+**Статус:** DONE -- Gateway assembly with AppBuilder, query endpoints, auth layer, health check, outbox relay background task, BC-owned RBAC (PermissionRegistry)
 
 Gateway собирает modules, query endpoints, auth layer, health check, outbox relay background task.
 

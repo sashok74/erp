@@ -6,17 +6,18 @@
 
 ## Ключевые документы (порядок чтения)
 
-1. **`docs/EXECUTION_PLAN.md`** — что делать дальше, в каком порядке. **Главный документ.** При конфликте с layer specs — EXECUTION_PLAN главнее.
-2. **`docs/engineering_invariants.md`** — правила, которые никогда не ослабляются
+1. **`docs/plan/EXECUTION_PLAN.md`** — что делать дальше, в каком порядке. **Главный документ.** При конфликте с layer specs — EXECUTION_PLAN главнее.
+2. **`docs/plan/engineering_invariants.md`** — правила, которые никогда не ослабляются
 3. **`docs/event_bus_architecture.md`** — как работает шина событий
 4. **`crates/*/src/lib.rs`** — точка входа в каждый crate, doc-comments объясняют назначение
 5. **`docs/testing_integration_style.md`** — как писать integration tests для BC без копипасты setup; новые integration tests делать только по этому шаблону
+6. **`docs/api_testing_rules.md`** — как проверять HTTP API новых BC, строить Postman/Newman regression suite и что считается Definition of Done для API
 
 ## При создании нового Bounded Context
 
-1. Прочитать `docs/EXECUTION_PLAN.md` фаза 6 (BC Template)
+1. Прочитать `docs/plan/EXECUTION_PLAN.md` фаза 6 (BC Template)
 2. Прочитать `crates/warehouse/BC_CONTEXT.md` (reference implementation)
-3. Проверить чеклист из `docs/engineering_invariants.md`
+3. Проверить чеклист из `docs/plan/engineering_invariants.md`
 
 ---
 
@@ -36,6 +37,7 @@
 - **Rust:** stable toolchain, edition 2024
 - **Task runner:** `just` (justfile в корне проекта)
 - **IDE:** VS Code Remote SSH с rust-analyzer
+- **MCP:** `erp-dev-pg` — прямой доступ к PostgreSQL (erp_dev) для инспекции схемы, данных, зависимостей. Позволяет выполнять SQL-запросы, смотреть структуру таблиц, сравнивать снимки данных, профилировать колонки и т.д.
 
 ---
 
@@ -67,7 +69,8 @@ Clorinde CLI          — SQL → типобезопасный Rust crate (codeg
 ```
 queries/                        ← SQL-файлы по BC
   ├── common/
-  └── warehouse/
+  ├── warehouse/
+  └── catalog/
 
 crates/clorinde-gen/            ← СГЕНЕРИРОВАННЫЙ crate
 ```
@@ -85,24 +88,27 @@ crates/clorinde-gen/            ← СГЕНЕРИРОВАННЫЙ crate
 
 ```
 crates/
-  kernel/         — Platform SDK: трейты, ID, ошибки, CloudEvent. Без зависимости от БД.
+  kernel/         — Platform SDK: трейты, ID, ошибки, CloudEvent, security. Без зависимости от БД.
   event_bus/      — EventBus trait + InProcessBus. Заменяем на RabbitMQ/NATS.
-  runtime/        — CommandPipeline, CommandHandler/QueryHandler, ports, stubs.
-  auth/           — JWT, RBAC, PermissionChecker, axum middleware.
-  db/             — PgPool (deadpool), RLS, PgUnitOfWork, migrations.
+  runtime/        — CommandPipeline, QueryPipeline, CommandHandler/QueryHandler, ports, stubs.
+  auth/           — JWT, PermissionRegistry (BC-owned RBAC), PermissionChecker, axum middleware.
+  db/             — PgPool (deadpool), RLS, PgUnitOfWork, ScopedPgConnection, migrations, outbox relay.
   clorinde-gen/   — СГЕНЕРИРОВАННЫЙ: типобезопасные SQL-функции.
   audit/          — PgAuditLog (impl AuditLog trait).
   seq_gen/        — PgSequenceGenerator (gap-free per-tenant).
-  warehouse/      — MVP BC: domain, application, infrastructure.
-  gateway/        — axum HTTP server (единственный binary).
-  extensions/     — Lua (mlua) + WASM (wasmtime).
+  bc_http/        — Общие HTTP-утилиты для BC: DTO-макросы, repo-макросы, axum helpers.
+  warehouse/      — Reference BC: domain, application, infrastructure.
+  catalog/        — Второй BC: CreateProduct, GetProduct, cross-BC events.
+  gateway/        — axum HTTP server (единственный binary), AppBuilder.
+  test_support/   — Общий setup для integration tests.
+  extensions/     — Lua (mlua) + WASM (wasmtime) (planned).
 ```
 
 ---
 
 ## Engineering Invariants (сокращённо)
 
-Полный список: `docs/engineering_invariants.md`
+Полный список: `docs/plan/engineering_invariants.md`
 
 1. Все write — только через CommandPipeline
 2. Все write — с PermissionChecker (deny by default)
@@ -153,6 +159,7 @@ crates/
 - Domain unit-тесты: `#[cfg(test)] mod tests`, без БД
 - Integration: с реальной PostgreSQL через DATABASE_URL
 - Integration tests для BC писать по `docs/testing_integration_style.md`; общий setup брать из `crates/test_support`
+- API regression и Postman/Newman сценарии для новых BC строить по `docs/api_testing_rules.md`
 - Pipeline тесты: со stubs, мгновенные
 
 ---
@@ -168,8 +175,8 @@ just fmt / fmt-check    # форматирование
 just deny               # лицензии + advisories
 just check              # полная проверка
 just run                # запустить gateway
-just db-migrate         # применить миграции
-just db-reset           # пересоздать БД
+just db-migrate         # применить миграции (запускает gateway)
+just db-reset           # пересоздать БД (затем just run)
 just clorinde-generate  # перегенерировать SQL crate
 ```
 
@@ -177,16 +184,24 @@ just clorinde-generate  # перегенерировать SQL crate
 
 ## Текущий статус
 
-### Готово (Phase 0)
+Фазы 0-5 реализованы. Все механизмы работают end-to-end.
 
-| Crate | Тесты |
-|-------|-------|
-| kernel: TenantId, Command, DomainEvent, AggregateRoot, AppError, CloudEvent | 17 |
-| event_bus: EventBus trait, InProcessBus, EventEnvelope, HandlerRegistry | 16 |
-| runtime: CommandPipeline, CommandHandler, QueryHandler, ports, stubs | 21 |
-| auth: JwtService, RBAC PermissionMap, JwtPermissionChecker, axum middleware | 22 |
-| **Итого** | **76** |
+| Crate | Роль |
+|-------|------|
+| kernel | Platform SDK: TenantId, UserId, Command, DomainEvent, AggregateRoot, AppError, CloudEvent, RequestContext, security (PermissionRegistrar, PermissionManifest) |
+| event_bus | EventBus trait, InProcessBus, EventEnvelope, HandlerRegistry |
+| runtime | CommandPipeline, QueryPipeline, CommandHandler, QueryHandler, ports, stubs |
+| auth | JwtService, PermissionRegistry (BC-owned RBAC), JwtPermissionChecker, axum middleware |
+| db | PgPool (deadpool), RLS, PgUnitOfWork, ScopedPgConnection, миграции (refinery), outbox relay |
+| clorinde-gen | СГЕНЕРИРОВАННЫЙ: типобезопасные SQL-функции для common/warehouse/catalog |
+| audit | PgAuditLog (impl AuditLog trait) |
+| seq_gen | PgSequenceGenerator (gap-free per-tenant) |
+| bc_http | Общие HTTP-утилиты для BC: DTO-макросы, repo-макросы, axum helpers |
+| warehouse | Reference BC: domain, application, infrastructure, integration tests |
+| catalog | Второй BC: CreateProduct, GetProduct, cross-BC events |
+| gateway | axum HTTP server, AppBuilder, модульная сборка BC |
+| test_support | Общий setup для integration tests (PgPool, миграции, tenant) |
 
-### Следующий: Phase 1 — PostgreSQL + PgUnitOfWork
+### Следующий: Phase 6 -- BC Template Extraction
 
-См. `docs/EXECUTION_PLAN.md` Phase 1.
+См. `docs/plan/EXECUTION_PLAN.md` Phase 6.
