@@ -60,6 +60,7 @@ impl QueryHandler for GetProductHandler {
         let repo = ProductRepo::new(read.client(), ctx.tenant_id);
 
         let row = repo.find_by_sku(&query.sku).await?;
+        read.finish().await?;
 
         match row {
             Some(r) => Ok(ProductResult {

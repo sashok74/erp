@@ -25,7 +25,7 @@ impl PgPool {
         let pg_config = tokio_postgres::Config::from_str(database_url)?;
 
         let mgr_config = deadpool_postgres::ManagerConfig {
-            recycling_method: deadpool_postgres::RecyclingMethod::Fast,
+            recycling_method: deadpool_postgres::RecyclingMethod::Clean,
         };
         let mgr =
             deadpool_postgres::Manager::from_config(pg_config, tokio_postgres::NoTls, mgr_config);

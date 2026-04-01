@@ -54,6 +54,21 @@ impl ReadScope {
     pub fn client(&self) -> &deadpool_postgres::Client {
         &self.client
     }
+
+    /// Завершить read-only TX (COMMIT). Вызывать после всех запросов.
+    ///
+    /// Если не вызвать — соединение вернётся в пул с открытой TX,
+    /// `RecyclingMethod::Clean` выполнит `DISCARD ALL` при recycle.
+    ///
+    /// # Errors
+    ///
+    /// `AppError::Internal` при ошибке COMMIT (маловероятно для read-only TX).
+    pub async fn finish(self) -> Result<(), AppError> {
+        self.client
+            .batch_execute("COMMIT")
+            .await
+            .internal("read scope commit")
+    }
 }
 
 /// Read-write transaction с tenant isolation.

@@ -61,6 +61,8 @@ impl QueryHandler for GetBalanceHandler {
 
         let row = repo.get_balance(&query.sku).await?;
         let projection = repo.get_product_projection(&query.sku).await?;
+        read.finish().await?;
+
         let product_name = projection.map(|p| p.name);
 
         match row {

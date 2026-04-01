@@ -12,7 +12,7 @@ use event_bus::InProcessBus;
 use event_bus::registry::ErasedEventHandler;
 use event_bus::traits::{EventBus, EventHandler};
 use event_bus::{EventEnvelope, EventHandlerAdapter};
-use kernel::{DomainEvent, IntoInternal};
+use kernel::DomainEvent;
 use kernel::types::{RequestContext, TenantId, UserId};
 use runtime::ports::{UnitOfWork, UnitOfWorkFactory};
 use serde::{Deserialize, Serialize};
@@ -1266,44 +1266,38 @@ async fn force_rls_blocks_read_without_tenant_context() {
     );
 
     // 3. Read WITH correct tenant context → 1 row.
-    let count_correct: i64 = db::with_tenant_read(&pool, tenant_a, |client| {
-        Box::pin(async move {
-            let row = client
-                .query_one(
-                    "SELECT COUNT(*) FROM warehouse.inventory_items WHERE id = $1",
-                    &[&item_id],
-                )
-                .await
-                .internal("count")?;
-            Ok(row.get(0))
-        })
-    })
-    .await
-    .unwrap();
+    let read = db::ReadScope::acquire(&pool, tenant_a).await.unwrap();
+    let count_correct: i64 = read
+        .client()
+        .query_one(
+            "SELECT COUNT(*) FROM warehouse.inventory_items WHERE id = $1",
+            &[&item_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    read.finish().await.unwrap();
     assert_eq!(
         count_correct, 1,
-        "with_tenant_read with correct tenant must see the row"
+        "ReadScope with correct tenant must see the row"
     );
 
     // 4. Read with WRONG tenant context → 0 rows.
     let tenant_b = TenantId::new();
-    let count_wrong: i64 = db::with_tenant_read(&pool, tenant_b, |client| {
-        Box::pin(async move {
-            let row = client
-                .query_one(
-                    "SELECT COUNT(*) FROM warehouse.inventory_items WHERE id = $1",
-                    &[&item_id],
-                )
-                .await
-                .internal("count")?;
-            Ok(row.get(0))
-        })
-    })
-    .await
-    .unwrap();
+    let read = db::ReadScope::acquire(&pool, tenant_b).await.unwrap();
+    let count_wrong: i64 = read
+        .client()
+        .query_one(
+            "SELECT COUNT(*) FROM warehouse.inventory_items WHERE id = $1",
+            &[&item_id],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    read.finish().await.unwrap();
     assert_eq!(
         count_wrong, 0,
-        "with_tenant_read with wrong tenant must NOT see the row"
+        "ReadScope with wrong tenant must NOT see the row"
     );
 
     // Cleanup.

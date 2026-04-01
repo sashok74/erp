@@ -1,7 +1,7 @@
-//! Convenience wrappers для доступа к БД в handler'ах.
+//! Convenience wrappers для доступа к БД в command handler'ах.
 //!
-//! - `PgCommandContext` — для command handler'ов (внутри TX, через `PgUnitOfWork`)
-//! - `ReadDbContext` — для query handler'ов (отдельное соединение + RLS)
+//! `PgCommandContext` — доступ к `PgUnitOfWork` client + helpers
+//! (`record_change`, `emit_events`). Для read path используйте [`ReadScope`].
 
 use event_bus::EventEnvelope;
 use kernel::entity::AggregateRoot;
