@@ -17,6 +17,7 @@ use std::time::Duration;
 use axum::response::IntoResponse;
 use axum::{Json, Router, routing};
 use kernel::security::PermissionRegistrar;
+use tower_http::services::{ServeDir, ServeFile};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -197,6 +198,11 @@ fn build_router(
             }),
         );
     }
+
+    // SPA: serve ui/dist/ as static files, fallback to index.html for client routing
+    let spa = ServeDir::new("ui/dist")
+        .not_found_service(ServeFile::new("ui/dist/index.html"));
+    root = root.fallback_service(spa);
 
     // Global layers: body size limit + request timeout
     root.layer(tower_http::limit::RequestBodyLimitLayer::new(1_048_576)) // 1 MB

@@ -1,23 +1,25 @@
-import type { MockUser, UserTenant } from "./mock-users";
 import type { NavigationDescriptor } from "@/protocol/types";
+import type { LoginResult } from "./login-page";
+import { api } from "@/protocol/api";
 
 export interface AuthSession {
-  user: { id: string; display_name: string; email: string };
-  tenant: { id: string; name: string; slug: string };
+  user_id: string;
+  tenant_id: string;
   roles: string[];
   token: string;
 }
 
 const SESSION_KEY = "erp_session";
 
-export function createSession(user: MockUser, tenant: UserTenant): AuthSession {
+export function createSession(login: LoginResult): AuthSession {
   const session: AuthSession = {
-    user: { id: user.id, display_name: user.display_name, email: user.email },
-    tenant: { id: tenant.tenant_id, name: tenant.tenant_name, slug: tenant.tenant_slug },
-    roles: tenant.roles,
-    token: `mock-jwt-${user.id}-${tenant.tenant_id}`,
+    user_id: login.user_id,
+    tenant_id: login.tenant_id,
+    roles: login.roles,
+    token: login.token,
   };
   sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  api.setToken(session.token);
   return session;
 }
 
@@ -25,7 +27,9 @@ export function restoreSession(): AuthSession | null {
   const raw = sessionStorage.getItem(SESSION_KEY);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as AuthSession;
+    const session = JSON.parse(raw) as AuthSession;
+    api.setToken(session.token);
+    return session;
   } catch {
     return null;
   }
@@ -40,7 +44,6 @@ export function clearSession(): void {
 const navAccess: Record<string, string[]> = {
   catalog: ["admin", "catalog_manager", "viewer"],
   warehouse: ["admin", "warehouse_manager", "warehouse_operator", "viewer"],
-  admin: ["admin"],
 };
 
 export function filterNavigation(nav: NavigationDescriptor, roles: string[]): NavigationDescriptor {

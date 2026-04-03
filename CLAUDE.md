@@ -13,6 +13,10 @@
 5. **`docs/testing_integration_style.md`** — как писать integration tests для BC без копипасты setup; новые integration tests делать только по этому шаблону
 6. **`docs/api_testing_rules.md`** — как проверять HTTP API новых BC, строить Postman/Newman regression suite и что считается Definition of Done для API
 
+## UI Engine
+
+7. **`doc/ui/guide.md`** — архитектура UI-движка, как добавлять экраны, обработка действий, запрещённые паттерны (смешение метаданных и данных, бизнес-логика на клиенте). **Обязательно к прочтению перед любой работой с `ui/`.**
+
 ## При создании нового Bounded Context
 
 1. Прочитать `docs/plan/EXECUTION_PLAN.md` фаза 6 (BC Template)
