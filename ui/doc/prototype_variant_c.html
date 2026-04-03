@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MERP - Приходный ордер (Alpine + HTMX Prototype)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+       .erp-table th, .erp-table td { border: 1px solid #d1d5db; padding: 4px 8px; font-size: 0.875rem; }
+       .erp-table th { background-color: #f3f4f6; text-align: left; font-weight: 600; }
+       .erp-input { width: 100%; border: 1px solid transparent; background: transparent; outline: none; padding: 3px 6px; border-radius: 3px; font-family: inherit;}
+       .erp-input:focus, .erp-input:focus-visible { border: 1px solid #3b82f6; background: #fff; box-shadow: inset 0 1px 2px rgba(0,0,0,0.05); }
+       .erp-input:disabled { background-color: transparent; color: #4b5563; }
+       .readonly-mode .erp-input { pointer-events: none; }
+       .status-draft { background-color: #fef08a; color: #854d0e; }
+       .status-posted { background-color: #bbf7d0; color: #166534; }
+       kbd { background-color: #f3f4f6; border: 1px solid #d1d5db; border-radius: 4px; padding: 1px 4px; font-size: 0.75rem; margin-left: 4px;}
+    </style>
+</head>
+<body class="bg-slate-100 text-slate-900 font-sans h-screen flex flex-col p-4 md:p-6">
+    
+    <div x-data="erpDocument()" class="max-w-7xl mx-auto w-full flex flex-col h-full bg-white rounded-lg shadow border border-slate-300 overflow-hidden relative">
+        
+        <!-- Header / Meta section -->
+        <div class="px-5 py-4 border-b border-slate-200 bg-slate-50 flex flex-wrap justify-between items-center gap-4">
+            <div class="flex items-center gap-3">
+                <h1 class="text-xl font-bold tracking-tight">Приходный ордер № ПрО-2026-04-0012</h1>
+                <span class="px-2 py-0.5 text-xs font-semibold rounded border transition-colors duration-200" 
+                      :class="isReadonly ? 'bg-emerald-100 text-emerald-800 border-emerald-200' : 'bg-amber-100 text-amber-800 border-amber-200'" 
+                      x-text="status"></span>
+            </div>
+            <div class="flex items-center gap-6">
+                <div class="text-xs text-slate-500 hidden md:block" title="Полноценная клавиатурная навигация внутри таблицы">
+                    Excel-навигация: <kbd>Enter</kbd> / <kbd>↑</kbd> <kbd>↓</kbd> <kbd>→</kbd> <kbd>←</kbd>
+                </div>
+                <!-- Симуляция серверного триггера -->
+                <label class="relative inline-flex items-center cursor-pointer" title="В реальной жизни это состояние будет приходить с сервера (Rust) через HTMX">
+                    <input type="checkbox" class="sr-only peer" @change="toggleStatus()">
+                    <div class="w-9 h-5 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-slate-800"></div>
+                    <span class="ml-2 text-sm text-slate-600 font-medium border-b border-dashed border-slate-400">Симуляция SSR: is_readonly</span>
+                </label>
+            </div>
+        </div>
+
+        <!-- Тег формы, который будет перехвачен HTMX (hx-post="/api/save") -->
+        <form @submit.prevent="saveDocument" class="flex flex-col flex-1 overflow-hidden" id="erp-form">
+            <!-- Header forms -->
+            <div class="px-5 py-4 grid grid-cols-1 md:grid-cols-3 gap-6 border-b border-slate-200">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">Склад приемки</label>
+                    <select :disabled="isReadonly" name="warehouse_id" class="w-full border-slate-300 rounded border p-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50 disabled:text-slate-500 disabled:border-slate-200 transition-colors">
+                        <option value="1">Самарканд-Главный (СГ-1)</option>
+                        <option value="2">Самарканд-Сырье</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">Поставщик</label>
+                    <div class="flex">
+                        <input type="text" :disabled="isReadonly" name="supplier_name" value="ООО «УзПромДеталь»" class="w-full border-slate-300 rounded-l border p-2 text-sm outline-none bg-slate-50 disabled:text-slate-500 disabled:border-slate-200 transition-colors">
+                        <button type="button" :disabled="isReadonly" class="bg-slate-100 px-3 border border-l-0 border-slate-300 rounded-r hover:bg-slate-200 disabled:opacity-50 disabled:border-slate-200 transition-colors">🔍</button>
+                    </div>
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">Основание</label>
+                    <input type="text" :disabled="isReadonly" name="base_doc" value="Договор №45 от 10.01.2026" class="w-full border-slate-300 rounded border p-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50 disabled:text-slate-500 disabled:border-slate-200 transition-colors">
+                </div>
+            </div>
+
+            <!-- Toolbar -->
+            <div class="px-3 py-2 border-b border-slate-200 flex gap-2 bg-slate-50 items-center">
+                <button type="submit" :disabled="isReadonly" class="bg-slate-900 text-white px-4 py-1.5 rounded text-sm hover:bg-slate-800 focus:ring-2 focus:ring-slate-400 font-medium disabled:opacity-50 transition-colors shadow-sm flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg>
+                    Сохранить
+                </button>
+                <button type="button" :disabled="isReadonly" class="bg-white border border-slate-300 text-emerald-700 px-4 py-1.5 rounded text-sm hover:bg-emerald-50 focus:ring-2 focus:ring-emerald-500 font-semibold disabled:opacity-50 transition-colors shadow-sm flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                    Провести
+                </button>
+                <button type="button" x-show="isReadonly" class="bg-white border text-rose-600 px-4 py-1.5 rounded text-sm hover:bg-rose-50 font-medium transition-colors shadow-sm" style="display: none;">
+                    Отменить проведение
+                </button>
+                
+                <div class="ml-auto flex items-center text-xs text-slate-400 mr-2">
+                    <span x-text="'Строк: ' + lines.length"></span>
+                </div>
+            </div>
+
+            <!-- Table Container (Alpine.js x-for magic happens here) -->
+            <div class="flex-1 overflow-auto bg-white transition-colors duration-300" :class="{ 'readonly-mode bg-slate-50': isReadonly }">
+                <table class="w-full erp-table whitespace-nowrap">
+                    <thead class="sticky top-0 shadow-sm z-10">
+                        <tr>
+                            <th class="w-10 text-center text-slate-500">№</th>
+                            <th class="w-1/3 text-slate-700">Номенклатура</th>
+                            <th class="w-32 text-slate-700">Лот/Серия</th>
+                            <th class="w-24 text-right text-slate-700">Кол-во</th>
+                            <th class="w-16 text-center text-slate-700">Ед.</th>
+                            <th class="w-32 text-right text-slate-700">Цена (UZS)</th>
+                            <th class="w-32 text-right text-slate-700">Сумма (без НДС)</th>
+                            <th class="w-24 text-right text-slate-700">НДС (12%)</th>
+                            <th class="w-32 text-right text-slate-700">Всего (UZS)</th>
+                            <th class="w-10 text-center">
+                                <button type="button" @click="addLine" :disabled="isReadonly" class="text-slate-400 hover:text-blue-600 font-bold disabled:opacity-50 transition-colors p-1" title="Добавить строку (также работает при Enter в конце таблицы)">➕</button>
+                            </th>
+                        </tr>
+                    </thead>
+                    
+                    <!-- Событие keydown перехватывается на уровне tbody для всей таблицы -->
+                    <tbody x-ref="tableBody" @keydown="handleCellKeydown">
+                        <template x-for="(line, index) in lines" :key="line.id">
+                            <tr class="hover:bg-blue-50/40 transition-colors group">
+                                <td class="text-center text-slate-400 text-xs font-mono" x-text="index + 1"></td>
+                                <td>
+                                    <div class="flex items-center">
+                                        <!-- HTMX payload будет парсить name атрибуты как массивы -->
+                                        <input type="text" x-model="line.name" :name="'lines['+index+'].name'" :disabled="isReadonly" class="erp-input tabular-cell placeholder-slate-300" placeholder="Поиск номенклатуры...">
+                                        <button type="button" :disabled="isReadonly" class="px-1 text-slate-300 hover:text-blue-600 opacity-0 group-hover:opacity-100 disabled:hidden transition-opacity">🔍</button>
+                                    </div>
+                                </td>
+                                <td><input type="text" x-model="line.lot" :name="'lines['+index+'].lot'" :disabled="isReadonly" class="erp-input tabular-cell uppercase font-mono text-sm"></td>
+                                <td><input type="number" x-model.number="line.qty" :name="'lines['+index+'].qty'" :disabled="isReadonly" class="erp-input tabular-cell text-right font-medium text-blue-900"></td>
+                                <td class="text-center text-slate-500 text-sm" x-text="line.unit"></td>
+                                <td><input type="number" x-model.number="line.price" :name="'lines['+index+'].price'" :disabled="isReadonly" class="erp-input tabular-cell text-right text-slate-700"></td>
+                                
+                                <!-- Реактивные вычисления (выполняются только на клиенте) -->
+                                <td class="text-right text-slate-600 bg-slate-50/50" x-text="formatMoney(getSum(line))"></td>
+                                <td class="text-right text-slate-500 bg-slate-50/50" x-text="formatMoney(getVat(line))"></td>
+                                <td class="text-right font-bold text-slate-800 bg-slate-50/50" x-text="formatMoney(getTotal(line))"></td>
+                                
+                                <td class="text-center">
+                                    <button type="button" @click="removeLine(index)" :disabled="isReadonly" class="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 disabled:hidden font-bold transition-opacity" title="Удалить строку">✕</button>
+                                </td>
+                            </tr>
+                        </template>
+                    </tbody>
+                    
+                    <tfoot class="sticky bottom-0 bg-slate-100 shadow-[0_-1px_2px_rgba(0,0,0,0.05)] border-t border-slate-300 z-10">
+                        <tr class="font-semibold text-slate-800">
+                            <td colspan="6" class="text-right py-2.5 px-4 uppercase text-xs tracking-wider text-slate-500">Итого по документу:</td>
+                            <td class="text-right px-2" x-text="formatMoney(totalSum)"></td>
+                            <td class="text-right px-2 text-slate-500" x-text="formatMoney(totalVat)"></td>
+                            <td class="text-right px-2 font-bold text-lg text-slate-900" x-text="formatMoney(totalAmount)"></td>
+                            <td></td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+            
+            <!-- Индикатор процесса отправки (mock) -->
+            <div id="htmx-feedback" class="h-10 bg-slate-800 text-slate-300 text-xs flex items-center px-5 font-mono justify-between transition-colors duration-300">
+                <div class="flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full" :class="isReadonly ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'"></span>
+                    <span>State Controller (Alpine.js)</span>
+                </div>
+                <span x-text="isReadonly ? 'Server metadata overrides local: is_readonly=true' : 'Waiting for form submission (hx-post)...'"></span>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        document.addEventListener('alpine:init', () => {
+            Alpine.data('erpDocument', () => ({
+                isReadonly: false,
+                status: 'Черновик',
+                taxRate: 0.12, // Налог Узбекистана 12%
+                
+                // Стартовые данные. В реальном мире эти данные придут с сервера
+                // как JSON-объект в составе первоначального HTML-ответа
+                lines: [
+                    { id: 1, name: 'Электродвигатель АИР 80 В2', lot: 'L-2026-04A', qty: 5, unit: 'шт', price: 1250000 },
+                    { id: 2, name: 'Подшипник SKF 6204-2Z', lot: 'L-2026-04B', qty: 120, unit: 'шт', price: 45000 },
+                    { id: 3, name: '', lot: '', qty: null, unit: 'шт', price: null },
+                    { id: 4, name: '', lot: '', qty: null, unit: 'шт', price: null },
+                    { id: 5, name: '', lot: '', qty: null, unit: 'шт', price: null },
+                ],
+                
+                // Мгновенные вычислители (Getters) - решают проблему задержек сервера!
+                getSum(line) { return (line.qty && line.price) ? line.qty * line.price : 0; },
+                getVat(line) { return this.getSum(line) * this.taxRate; },
+                getTotal(line) { return this.getSum(line) + this.getVat(line); },
+                
+                get totalSum() { return this.lines.reduce((acc, line) => acc + this.getSum(line), 0); },
+                get totalVat() { return this.lines.reduce((acc, line) => acc + this.getVat(line), 0); },
+                get totalAmount() { return this.totalSum + this.totalVat; },
+                
+                formatMoney(val) { 
+                    if (!val) return '';
+                    // Форматирование "1 000 000 UZS"
+                    return Math.floor(val).toString().replace(/(\d)(?=(\d{3})+(?!\d))/g, '$1 ') + ' UZS'; 
+                },
+                
+                addLine() {
+                    this.lines.push({ id: Date.now(), name: '', lot: '', qty: null, unit: 'шт', price: null });
+                },
+                
+                removeLine(index) {
+                    this.lines.splice(index, 1);
+                },
+                
+                // Обработка клавиатуры "в стиле Excel"
+                handleCellKeydown(e) {
+                    if (this.isReadonly) return;
+                    
+                    const cell = e.target;
+                    if (!cell.classList.contains('tabular-cell')) return;
+                    
+                    // Собираем все АКТИВНЫЕ инпуты в таблице
+                    const inputs = Array.from(this.$refs.tableBody.querySelectorAll('.tabular-cell:not([disabled])'));
+                    const currentIndex = inputs.indexOf(cell);
+                    
+                    if (currentIndex === -1) return;
+
+                    const colsPerRow = 4; // name, lot, qty, price (4 редактируемых колонки)
+
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const nextInput = inputs[currentIndex + 1];
+                        if (nextInput) {
+                            nextInput.focus();
+                            nextInput.select();
+                        } else {
+                            // Если мы в последней ячейке таблицы - добавляем новую строку
+                            this.addLine();
+                            // Ждем пока DOM обновится, затем ставим фокус
+                            this.$nextTick(() => {
+                                const newInputs = Array.from(this.$refs.tableBody.querySelectorAll('.tabular-cell:not([disabled])'));
+                                if (newInputs[currentIndex + 1]) newInputs[currentIndex + 1].focus();
+                            });
+                        }
+                    } else if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        if (inputs[currentIndex + colsPerRow]) {
+                            inputs[currentIndex + colsPerRow].focus();
+                            inputs[currentIndex + colsPerRow].select();
+                        }
+                    } else if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        if (inputs[currentIndex - colsPerRow]) {
+                            inputs[currentIndex - colsPerRow].focus();
+                            inputs[currentIndex - colsPerRow].select();
+                        }
+                    } else if (e.key === 'ArrowRight' && cell.selectionStart === cell.value.length) {
+                        // Переход вправо только если курсор в конце текста
+                        e.preventDefault();
+                        if (inputs[currentIndex + 1]) {
+                            inputs[currentIndex + 1].focus();
+                            inputs[currentIndex + 1].select();
+                        }
+                    } else if (e.key === 'ArrowLeft' && cell.selectionStart === 0) {
+                        // Переход влево только если курсор в начале текста
+                        e.preventDefault();
+                        if (inputs[currentIndex - 1]) {
+                            inputs[currentIndex - 1].focus();
+                            inputs[currentIndex - 1].select();
+                        }
+                    }
+                },
+                
+                // Симуляция серверной смены состояния (RBAC / Workflow)
+                toggleStatus() {
+                    this.status = this.isReadonly ? 'Проведен' : 'Черновик';
+                },
+
+                // Имитация отправки HTMX формы
+                saveDocument() {
+                    const form = document.getElementById('erp-form');
+                    const btn = this.$event.submitter;
+                    const originalText = btn.innerHTML;
+                    
+                    btn.innerHTML = '⏳ Сохраняем...';
+                    btn.disabled = true;
+                    
+                    // Считаем непустые строки
+                    const filledLines = this.lines.filter(l => l.name !== '' || l.qty > 0).length;
+                    
+                    // Симуляция задержки сети и ответа сервера
+                    setTimeout(() => {
+                        const feedback = document.getElementById('htmx-feedback');
+                        feedback.classList.replace('bg-slate-800', 'bg-emerald-700');
+                        feedback.children[1].innerText = `SERVER_RESPONSE -> 200 OK. Сохранено строк: ${filledLines}.`;
+                        
+                        setTimeout(() => {
+                            btn.innerHTML = originalText;
+                            btn.disabled = false;
+                            
+                            feedback.classList.replace('bg-emerald-700', 'bg-slate-800');
+                            feedback.children[1].innerText = 'Waiting for form submission (hx-post)...';
+                        }, 3000);
+                    }, 600);
+                }
+            }));
+        });
+    </script>
+</body>
+</html>
